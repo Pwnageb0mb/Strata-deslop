@@ -40,6 +40,7 @@ import pathlib
 import sys
 
 MARKER = "strata_engine_args"
+SAVED = "strata_engine_args_saved"   # the install's own value of each flag ENGINE_ARGS overrides
 
 
 def strip(args: list[str], names: set[str]) -> list[str]:
@@ -54,6 +55,14 @@ def strip(args: list[str], names: set[str]) -> list[str]:
             out.append(args[i])
             i += 1
     return out
+
+
+def take(args: list[str], name: str) -> list[str]:
+    """The tokens of flag `name` in `args` (the flag and its value, by strip's convention); [] when absent."""
+    for i, a in enumerate(args):
+        if a == name:
+            return args[i:i + 2] if i + 1 < len(args) and not args[i + 1].startswith("--") else [a]
+    return []
 
 
 def read_key(path: str) -> str | None:
@@ -86,16 +95,29 @@ def main() -> int:
 
     args = [str(a) for a in cfg["args"]]
     managed = cfg.get(MARKER) if isinstance(cfg.get(MARKER), list) else []
+    saved = cfg.get(SAVED) if isinstance(cfg.get(SAVED), dict) else {}
     want = [a for a in extra if a.startswith("--")]
-    new = strip(args, set(managed) | set(want)) + extra
+    # The install's own args: without the flags this tool added, and with the values those flags replaced put
+    # back - so dropping a flag from ENGINE_ARGS restores what setup.py wrote (e.g. --prefill auto) instead of
+    # leaving the flag out altogether.
+    base = strip(args, set(managed))
+    for flag in managed:
+        base += [str(t) for t in saved.get(flag, [])]
+    keep = {f: take(base, f) for f in want if take(base, f)}
+    keep.update({f: v for f, v in saved.items() if f in want})
+    new = strip(base, set(want)) + extra
 
     changed = []
-    if new != args or want != managed:
+    if new != args or want != managed or keep != saved:
         cfg["args"] = new
         if want:
             cfg[MARKER] = want
         else:
             cfg.pop(MARKER, None)
+        if keep:
+            cfg[SAVED] = keep
+        else:
+            cfg.pop(SAVED, None)
         changed.append("%d -> %d args (%s)" % (len(args), len(new), " ".join(extra) or "none"))
     if key is not None and cfg.get("api_key") != key:
         cfg["api_key"] = key
