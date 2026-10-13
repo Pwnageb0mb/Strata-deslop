@@ -276,9 +276,12 @@ All changes since upstream commit `7695859a` (2026-10-11). Authors: DeepSeek 4.1
 - **Per-token output pipeline:** the detokenizer, stop strings, the reasoning/tool-call stream parser and the
   repeated-reasoning check, fused into one C++ call per token.
 - **Request translation (OpenAI/Anthropic → messages):** ported, but measured 3–4× slower end to end because the JSON
-  round trip costs more than the Python, so it is **off by default** (`STRATA_NATIVE_REQUEST=1`).
+  round trip costs more than the Python. It was off by default, and a follow-up commit removed the port
+  (`STRATA_NATIVE_REQUEST`); the Python translation is the live path.
 - **Kept in Python:**
-  - The original Python implementations, as the reference and fallback (`STRATA_PY_TOKENIZER=1`).
+  - The original Python tokenizer, detokenizer, stop matcher, output parser and repeat check were first kept as the
+    reference and fallback (`STRATA_PY_TOKENIZER=1`); a follow-up commit removed them. The server now requires
+    `libstrata_text`. The Jinja2 chat-template fallback stays, for templates the C++ engine cannot parse.
   - HTTP handling and process control, which is glue.
   - JSON-schema checks, which use the `jsonschema` package.
 
@@ -360,7 +363,7 @@ The biggest single factor was the core-0 inheritance bug. The same three changes
 | Repeated-reasoning check | 47 ms | 9 ms | 5.2× |
 | Request translation (200 messages) | ~0.5 ms | ~1.7 ms | **slower, off by default** |
 
-Every C++ path is checked against the Python reference:
+Every C++ path was checked against the Python reference (since removed, see above):
 - **Tokenizer:** identical ids on the deployed 248,320-token vocabulary.
 - **Chat templates:** 3,960 renders identical to Jinja2.
 - **Output pipeline:** 20,000 randomly chunked streams identical.
@@ -388,8 +391,8 @@ Every C++ path is checked against the Python reference:
 | | |
 | --- | --- |
 | `src/`, `include/` | the engine (CUDA), plus `src/text/` and `include/strata/text/`: the server's C++ text library |
-| `serve/` | the HTTP API (Python) and its ctypes wrappers: `native_text.py`, `native_stream.py`, `native_request.py` |
-| `tools/` | packer, tokenizer, benchmarks, audit, and the Python↔C++ differential tests (`test_native_*.py`) |
+| `serve/` | the HTTP API (Python) and its ctypes wrappers: `native_text.py`, `native_stream.py` |
+| `tools/` | packer, tokenizer, benchmarks, audit |
 | `deploy/` | the container config, start/stop scripts, config reconciler, egress allowlist |
 | `third_party/` | `ggml` headers, vendored `llama_jinja` and `nlohmann` (MIT); `llama.cpp` is placed here by hand, gitignored |
 | `docs/` | `port-ledger.tsv`, `CXX_PORT.md`, `SECURITY_AUDIT.md`, and upstream's engine docs |

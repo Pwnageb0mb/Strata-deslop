@@ -1,10 +1,8 @@
 """serve/native_stream.py - the output side of one generation, in C++ (libstrata_text, include/strata/text/strata_stream.h).
 
-NativeDetokenizer, NativeStopMatcher and NativeOutputParser are drop-in replacements for server.Detokenizer,
-server.StopMatcher and frontend.OutputParser (same methods, attributes and Event objects), and repeat_coverage() for
-server.reasoning_repeat_coverage.  The Python classes stay as the reference and the test oracle
-(tools/test_native_stream.py compares them); the server picks these when the library is there and
-STRATA_PY_TOKENIZER is not "1" (see the new_* functions).
+NativeDetokenizer (incremental UTF-8 decode), NativeStopMatcher, NativeOutputParser (Events, state, buf, pending)
+and repeat_coverage() (the reasoning loop check), plus NativePipe, the fused one-call-per-token step the server runs.
+The server requires libstrata_text; the Python versions of these were removed.
 
 Where the port is not exact: nesting deeper than 500 in a tool argument's JSON reads as text (Python would raise
 RecursionError); `parser.pending` is a list of None of the right length (the server only asks whether it is empty).
@@ -13,10 +11,9 @@ from __future__ import annotations
 
 import ctypes
 import json
-import os
 from pathlib import Path
 
-from serve.frontend import THINK_END, Event, OutputParser, ToolCall
+from serve.frontend import THINK_END, Event, ToolCall
 
 ABI_VERSION = 1
 _STATES = ("reasoning", "content", "call", "json", "rcall")
@@ -75,11 +72,6 @@ def load(path=None):
     return lib
 
 
-def enabled() -> bool:
-    """Use the native classes: the library has them and the Python implementations were not asked for."""
-    return os.environ.get("STRATA_PY_TOKENIZER") != "1" and load() is not None
-
-
 def _err(lib) -> str:
     return (lib.strata_stream_error() or b"").decode("utf-8", "replace")
 
@@ -89,7 +81,7 @@ def _text(ptr, n: int) -> str:
 
 
 class NativeDetokenizer:
-    """server.Detokenizer for a tokenizer with token_bytes: the incremental UTF-8 decoder is C++."""
+    """The incremental UTF-8 decoder (for a tokenizer with token_bytes) in C++."""
 
     def __init__(self, tok):
         self._lib = load()
@@ -111,7 +103,7 @@ class NativeDetokenizer:
 
 
 class NativeStopMatcher:
-    """server.StopMatcher."""
+    """Cuts the answer at the first stop string, holding back a possible start of one."""
 
     def __init__(self, stops: list[str]):
         self._lib = load()
@@ -164,7 +156,7 @@ def _tools_json(tools) -> bytes | None:
 
 
 class NativeOutputParser:
-    """frontend.OutputParser: feed() text, get Events; state, buf, pending, rescued and refused as attributes."""
+    """feed() text, get Events; state, buf, pending, rescued and refused as attributes."""
 
     def __init__(self, thinking: bool = True, tools: list[dict] | None = None, stream_tools: bool = False,
                  recover: bool = False):
@@ -277,7 +269,7 @@ class NativeOutputParser:
 
 
 def repeat_coverage(text: str) -> float:
-    """server.reasoning_repeat_coverage."""
+    """Coverage of recent words by 12-word passages seen at least three times (the reasoning loop check)."""
     b = text.encode("utf-8", _UTF8)
     r = load().strata_repeat_coverage(b, len(b))
     if r < 0:
@@ -296,7 +288,6 @@ F_HIT = 0x40           # a stop string matched
 F_THINK_END = 0x80     # parser.buf == THINK_END
 F_THINKING = 0x100     # the state is reasoning or rcall
 _OVERFLOW, _ONE_R, _ONE_C = 0x200, 0x400, 0x800
-_STATE_IX = {s: i for i, s in enumerate(_STATES)}
 
 
 class _Pipe:
@@ -332,45 +323,8 @@ class _Pipe:
         return out
 
 
-class PyPipe(_Pipe):
-    """The chain over any detokenizer / parser / stop matcher (the Python classes, or the native ones one call each)."""
-
-    def __init__(self, parser, detok, stops):
-        super().__init__(parser, detok, stops)
-        self.tail = ""
-        self.sync()
-
-    def sync(self) -> int:
-        p, st = self.parser, self.parser.state
-        fl = _STATE_IX[st]
-        if p.buf:
-            fl |= F_BUF
-            if p.buf == THINK_END:
-                fl |= F_THINK_END
-        if p.pending:
-            fl |= F_PENDING
-        if self.detok.pending():
-            fl |= F_DETOK
-        if self.stops is not None and self.stops.hit is not None:
-            fl |= F_HIT
-        if st == "reasoning" or st == "rcall":
-            fl |= F_THINKING
-        self.fl = fl
-        return fl
-
-    def step(self, t: int, track: bool = True) -> list[Event]:
-        piece = self.detok.push(t)
-        if track:
-            self.tail = (self.tail + piece)[-2:]
-        try:
-            evs = self.cut(self.parser.feed(piece))
-        finally:
-            self.sync()
-        return evs
-
-
 class NativePipe(_Pipe):
-    """strata_pipe_step: the same chain in one C call per token (all three must be the native classes)."""
+    """strata_pipe_step: the same chain in one C call per token ."""
     _CAP = 1 << 16
 
     def __init__(self, tok, parser, detok, stops):
@@ -428,25 +382,3 @@ class NativePipe(_Pipe):
 
 def _text_lossy(ptr, n: int) -> str:
     return ctypes.string_at(ptr, n).decode("utf-8", "replace")
-
-
-# ---- what the server calls: the native class when it is there, else the Python reference ------------------------
-def new_detokenizer(tok, py_cls):
-    return NativeDetokenizer(tok) if hasattr(tok, "token_bytes") and enabled() else py_cls(tok)
-
-
-def new_stop_matcher(stops, py_cls):
-    return NativeStopMatcher(stops) if enabled() else py_cls(stops)
-
-
-def new_output_parser(**kw):
-    return NativeOutputParser(**kw) if enabled() else OutputParser(**kw)
-
-
-def new_pipe(tok, parser, detok, stops):
-    """The fused one-call-per-token chain when all three are native and the tokenizer is libstrata_text's, else the
-    same chain call by call."""
-    if (isinstance(parser, NativeOutputParser) and isinstance(detok, NativeDetokenizer) and detok.tok is tok
-            and (stops is None or isinstance(stops, NativeStopMatcher)) and hasattr(tok, "raw_blob")):
-        return NativePipe(tok, parser, detok, stops)
-    return PyPipe(parser, detok, stops)

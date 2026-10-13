@@ -3,6 +3,11 @@
 A request to "rewrite the Python as C++ where possible" needs the word *possible* pinned to something. The
 repository answers it in two places, in its own words, and this file records the measurement behind them.
 
+> Follow-up: the Python tools that have a C++ port and that nothing still runs (`make_profile`, `make_profile_mix`,
+> `bench_eviction`, `replay_cache_policy`, `draft_vocab`, `ple_fp8_pack`, `embd_bf16_pack`), their Python tests and
+> their `gen_*_golden.py` generators were removed. The C++ tools, tests and golden files are now the reference.
+> Python tools below that are named as the reference no longer exist in the tree; see git history.
+
 ## How much of this is Python
 
 Non-test lines, this checkout (`third_party/` and `bench/` left out):
@@ -67,7 +72,7 @@ without a GPU.
 **Landed: the pre-tokenizer and the tokenizer.** `src/tokenizer/` - `pretokenizer.cpp`, `tokenizer.cpp`,
 `utf8.cpp` - with `include/strata/tokenizer/`.
 
-**Now used by the server at runtime.** The server's tokenizer is C++: `libstrata_text.so` (cmake target `strata_text`, `cmake/strata_text.cmake`; C ABI in `include/strata/text/strata_text.h` and `src/text/strata_text_capi.cpp`), loaded by the ctypes wrapper `serve/native_text.py`. The Dockerfile builds it and copies it beside the engine. It is looked up in `$STRATA_TEXT_LIB`, beside the engine binary, then `ROOT/engine`, `ROOT/engine-cuda12` and `ROOT/build`. If it is missing, the server refuses to start; `STRATA_PY_TOKENIZER=1` falls back to `tools/strata_tokenizer.py`. Measured on this host against the deployed UD-Q4_K_XL vocabulary (248,320 tokens): identical ids on 133 texts and on a 10 MB, 2.77M-token prompt, which took 0.68 s native against 2.01 s in Python (cold piece cache). The golden tests had not covered one bug in the heap path, for pieces over 64 symbols (long whitespace runs): a node already merged away could merge again. It is fixed.
+**Now used by the server at runtime.** The server's tokenizer is C++: `libstrata_text.so` (cmake target `strata_text`, `cmake/strata_text.cmake`; C ABI in `include/strata/text/strata_text.h` and `src/text/strata_text_capi.cpp`), loaded by the ctypes wrapper `serve/native_text.py`. The Dockerfile builds it and copies it beside the engine. It is looked up in `$STRATA_TEXT_LIB`, beside the engine binary, then `ROOT/engine`, `ROOT/engine-cuda12` and `ROOT/build`. If it is missing, the server refuses to start (the `STRATA_PY_TOKENIZER=1` fallback to the Python tokenizer was removed; `tools/strata_tokenizer.py` stays for the GGUF extract and the tools that import it). Measured on this host against the deployed UD-Q4_K_XL vocabulary (248,320 tokens): identical ids on 133 texts and on a 10 MB, 2.77M-token prompt, which took 0.68 s native against 2.01 s in Python (cold piece cache). The golden tests had not covered one bug in the heap path, for pieces over 64 symbols (long whitespace runs): a node already merged away could merge again. It is fixed.
 
 The pattern leans on `\p{L}`, `\p{M}`, `\p{N}` and `\s`, so the classes had to come from somewhere. They come
 from the reference's own module, generated into a 9 KB header by `tools/gen_unicode_classes.py` - **not** from

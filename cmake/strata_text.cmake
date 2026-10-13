@@ -13,8 +13,6 @@ add_library(strata_text SHARED
   ${_strata_text_root}/src/text/stream.cpp
   ${_strata_text_root}/src/text/output_parser.cpp
   ${_strata_text_root}/src/text/pytext.cpp
-  # request translation (serve/frontend.py openai_to_messages / anthropic_to_messages), strata_request.h
-  ${_strata_text_root}/src/text/request_capi.cpp
   # chat templates: llama.cpp's Jinja engine (third_party/llama_jinja) behind strata_template.h
   ${_strata_text_root}/src/text/template_capi.cpp
   ${_strata_text_root}/third_party/llama_jinja/jinja/lexer.cpp

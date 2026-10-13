@@ -11,6 +11,10 @@
 #            needs-surface a port needs a subsystem this tree does not have (named in the note)
 #            out-of-scope  the repository's own docs/CXX_PORT.md places it outside "where possible"
 #
+# Rows for the seven ported tools nothing runs any more (make_profile, make_profile_mix, bench_eviction,
+# replay_cache_policy, draft_vocab, ple_fp8_pack, embd_bf16_pack) were dropped with the Python files; their C++
+# ports, tests and goldens stand as the reference.
+#
 # DELIBERATELY OUT OF SCOPE OF THIS LIST, so that the sentence above is true rather than approximately true:
 # `bench/` (historical benchmark results and their one-off scripts), `sycl/` (the Intel port's own tree),
 # `ref/`, `docs/media/`, and the vendored `third_party/`.  What this lists is the surface the engine ships.
@@ -20,11 +24,6 @@ tools/strata_tokenizer.py	src/tokenizer/pretokenizer.cpp src/tokenizer/tokenizer
 tools/iq_pack.py	src/artifact/pack_writer.cpp	tests/artifact/pack_test.cpp	ported
 tools/strata_pack.py	include/strata/artifact/canonical_codes.hpp include/strata/artifact/canonical_mapping.hpp include/strata/artifact/canonical_entry.hpp src/artifact/pack_build.cpp	tests/artifact/canonical_codes_test.cpp tests/artifact/canonical_mapping_test.cpp tests/artifact/canonical_entry_test.cpp tests/artifact/pack_build_test.cpp	ported
 tools/pack_index.py	src/artifact/pack_index.cpp	tests/artifact/pack_index_test.cpp	ported
-tools/make_profile.py	src/core/expert_profile.cpp	tests/core/expert_profile_test.cpp	ported
-tools/make_profile_mix.py	src/core/profile_mix_main.cpp	tests/core/expert_profile_test.cpp	ported
-tools/bench_eviction.py	src/core/eviction_sim.cpp	tests/core/eviction_sim_test.cpp	ported
-tools/replay_cache_policy.py	src/core/cache_replay.cpp	tests/core/cache_replay_test.cpp	ported
-tools/draft_vocab.py	src/tokenizer/draft_vocab_main.cpp src/tokenizer/gguf_vocab.cpp	tests/tokenizer/draft_vocab_test.cpp	ported
 tools/mtp_rt.py	src/artifact/mtp_rt_main.cpp include/strata/artifact/expert_arena.hpp include/strata/artifact/q8_0_quant.hpp	tests/artifact/mtp_rt_test.cpp tests/artifact/mtp_rt_blob_test.cpp tests/artifact/q8_0_quant_test.cpp	ported
 tools/gguf_reader.py	include/strata/artifact/gguf_reader.hpp		not-a-target
 tools/canonical_xcheck.py			not-a-target
@@ -42,14 +41,8 @@ tools/gen_strata_pack_golden.py			not-a-target
 tools/gen_tokenizer_golden.py			not-a-target
 tools/gen_pretok_golden.py			not-a-target
 tools/gen_unicode_classes.py			not-a-target
-tools/gen_eviction_golden.py			not-a-target
-tools/gen_cache_replay_golden.py			not-a-target
-tools/gen_draft_vocab_golden.py			not-a-target
 tools/gen_mtp_rt_golden.py			not-a-target
 tools/gen_mtp_rt_blob_golden.py			not-a-target
-tools/gen_safetensors_pack_golden.py			not-a-target
-tools/ple_fp8_pack.py	include/strata/artifact/json.hpp include/strata/artifact/safetensors.hpp include/strata/artifact/gguf_write.hpp src/artifact/ple_fp8_pack_main.cpp	tests/artifact/ple_fp8_pack_test.cpp	ported
-tools/embd_bf16_pack.py	include/strata/artifact/json.hpp include/strata/artifact/safetensors.hpp include/strata/artifact/gguf_write.hpp src/artifact/embd_bf16_pack_main.cpp	tests/artifact/embd_bf16_pack_test.cpp	ported
 tools/quantscope.py			needs-surface: local file headers only, so no HTTP client; a port would need its regex and JSON reporting
 tools/strata_inspect.py			needs-surface: local file headers only, so no HTTP client; a port would need its regex and JSON reporting
 tools/mtp_fetch.py			needs-surface: verify-only (SHA256 of the MTP tensors already in place; no download, no HTTP client)

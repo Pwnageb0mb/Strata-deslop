@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import socket
+import struct
 import sys
 import tempfile
 import threading
@@ -952,7 +953,7 @@ class ToolCallTerminators(unittest.TestCase):
                                                               "content": {"type": "string"}}}}]
 
     def run_parser(self, stream_tools, step):
-        from serve.frontend import OutputParser
+        from serve.native_stream import NativeOutputParser as OutputParser
         text = ("</think>\n\n<tool_call>\n<function=write>\n<parameter=path>\ndoc.md\n</parameter>\n"
                 f"<parameter=content>\n{self.CONTENT}\n</parameter>\n</function>\n</tool_call>")
         p = OutputParser(thinking=True, tools=self.SCHEMA, stream_tools=stream_tools)
@@ -985,7 +986,7 @@ class ToolCallTagInProse(unittest.TestCase):
             "</parameter>\n</function>\n</tool_call>")
 
     def parse(self, text, stream_tools, step):
-        from serve.frontend import OutputParser
+        from serve.native_stream import NativeOutputParser as OutputParser
         p = OutputParser(thinking=True, tools=self.SCHEMA, stream_tools=stream_tools)
         evs = []
         for i in range(0, len(text), step):
@@ -1021,7 +1022,7 @@ class ToolCallRecovery(unittest.TestCase):
     RECOVER = True
 
     def parse(self, text, stream_tools, step):
-        from serve.frontend import OutputParser
+        from serve.native_stream import NativeOutputParser as OutputParser
         p = OutputParser(thinking=True, tools=self.SCHEMA, stream_tools=stream_tools, recover=self.RECOVER)
         evs = []
         for i in range(0, len(text), step):
@@ -1100,7 +1101,7 @@ class ToolCallRecoveryOff(unittest.TestCase):
     """Without the switch the parser returns what it always did for the same shapes (the default stays as it is)."""
 
     def parse(self, text):
-        from serve.frontend import OutputParser
+        from serve.native_stream import NativeOutputParser as OutputParser
         p = OutputParser(thinking=True, tools=ToolCallRecovery.SCHEMA, stream_tools=True)
         evs = p.feed("</think>\n\n" + text) + p.finish()
         return ([e.call.name for e in evs if e.kind == "tool_call"],
@@ -1148,7 +1149,7 @@ class UnfinishedToolCall(unittest.TestCase):
     PROPS = {"path": {"type": "string"}, "content": {"type": "string"}}
 
     def test_parser(self):
-        from serve.frontend import OutputParser
+        from serve.native_stream import NativeOutputParser as OutputParser
         schema = [{"name": "write", "parameters": {"properties": self.PROPS}}]
         for text, content in ((self.CUT, None), (self.WHOLE, "all of it"),
                               (self.WHOLE[:-len("</tool_call>")], "all of it")):   # only </tool_call> missing: whole
@@ -2003,14 +2004,16 @@ class LearnedProfile(unittest.TestCase):
     begins from it when it is a profile of the same model; without the key the arguments are unchanged."""
 
     def write(self, path, nl=48, ne=512, n=4):
-        sys.path.insert(0, str(ROOT / "tools"))
-        import make_profile
-        old = make_profile.N_LAYER
-        make_profile.N_LAYER = nl
-        try:
-            make_profile.write_profile(path, [(i % nl, i // nl) for i in range(n)], n_expert=ne)
-        finally:
-            make_profile.N_LAYER = old
+        ranked = [(i % nl, i // nl) for i in range(n)]
+        table = [[-1] * ne for _ in range(nl)]
+        for slot, (layer, e) in enumerate(ranked):
+            table[layer][e] = slot
+        with open(path, "wb") as f:                      # the profile file format (STRP, version, layers, experts, ...)
+            f.write(b"STRP" + struct.pack("<5I", 1, nl, ne, len(ranked), len(ranked)))
+            for layer, e in ranked:
+                f.write(struct.pack("<HH", layer, e))
+            for layer in range(nl):
+                f.write(struct.pack("<%di" % ne, *table[layer]))
 
     def test_without_the_key_nothing_changes(self):
         args = ["--native", "x", "--expert-profile", "data/expert-profile.bin", "--adapt-every", "4"]
@@ -4651,7 +4654,7 @@ class StopStrings(unittest.TestCase):
                 self.assertEqual(code, 400)
 
     def test_matcher_holds_back_only_a_possible_prefix(self):
-        from serve.server import StopMatcher
+        from serve.native_stream import NativeStopMatcher as StopMatcher
         m = StopMatcher(["</s>"])
         self.assertEqual(m.push("a <"), "a ")              # "<" may start "</s>"
         self.assertEqual(m.push("b"), "<b")                # it did not

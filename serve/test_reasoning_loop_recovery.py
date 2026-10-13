@@ -1,8 +1,8 @@
 """CPU-only regression for opt-in reasoning recovery: python -m unittest serve.test_reasoning_loop_recovery."""
 import threading
 import unittest
-from serve.server import (Service, ByteTokenizer, MockEngine, HIGH_EFFORT,
-                          reasoning_repeat_coverage, focused_recovery_prompt)
+from serve.native_stream import repeat_coverage as reasoning_repeat_coverage
+from serve.server import Service, ByteTokenizer, MockEngine, HIGH_EFFORT, focused_recovery_prompt
 
 
 class Tokenizer(ByteTokenizer):

@@ -21,7 +21,8 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from serve.frontend import ChatTemplate, OutputParser  # noqa: E402
+from serve.frontend import ChatTemplate  # noqa: E402
+from serve.native_stream import NativeOutputParser as OutputParser  # noqa: E402
 from serve.server import ByteTokenizer, MockEngine, Service, serve  # noqa: E402
 from serve.test_server import CTX  # noqa: E402
 

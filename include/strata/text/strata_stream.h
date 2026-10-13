@@ -1,8 +1,8 @@
 /* include/strata/text/strata_stream.h - libstrata_text, the output side of one generation: incremental UTF-8
  * decoding of token bytes, stop strings, the reasoning / content / tool-call parser, and the reasoning-loop check.
  *
- * C ports of serve/server.py's Detokenizer, StopMatcher and reasoning_repeat_coverage and serve/frontend.py's
- * OutputParser (those stay the reference and the test oracle: tools/test_native_stream.py compares them).  Same
+ * C implementations of the detokenizer, stop matcher, repeat-coverage check and
+ * OutputParser.  Same
  * conventions as strata_text.h: plain C, no exception crosses it (a failing call returns a negative value or NULL and
  * strata_stream_error() says why, per thread), opaque handles.  A handle belongs to one generation and is not
  * thread-safe; different handles may be used from different threads.

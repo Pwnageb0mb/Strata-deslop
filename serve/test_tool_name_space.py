@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from serve.frontend import OutputParser  # noqa: E402
+from serve.native_stream import NativeOutputParser as OutputParser  # noqa: E402
 
 # "42" for a string parameter stays a string only when the call finds its tool's schema
 SCHEMA = [{"name": "capture", "parameters": {"properties": {"content": {"type": "string"}}}}]

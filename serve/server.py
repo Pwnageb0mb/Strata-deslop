@@ -26,7 +26,6 @@ import collections
 import base64
 import hashlib
 import hmac
-import codecs
 import ctypes
 import ipaddress
 import json
@@ -53,11 +52,11 @@ from urllib.parse import parse_qs, urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT))   # run as a script (run-<model>.bat) as well as a module
-from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthropic_to_messages,  # noqa: E402
+from serve.frontend import (THINK_END, ChatTemplate, Event, anthropic_to_messages,  # noqa: E402
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
-from serve import native_request, native_stream, runconfig  # noqa: E402
+from serve import native_stream, runconfig  # noqa: E402
 from serve.native_stream import (F_BUF as NS_BUF, F_DETOK as NS_DETOK, F_HIT as NS_HIT,  # noqa: E402
                                  F_PENDING as NS_PENDING, F_THINK_END as NS_THINK_END, F_THINKING as NS_THINKING)
 from serve import logit_bias as bias_api  # noqa: E402
@@ -65,9 +64,6 @@ from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
-
-# the request translation: libstrata_text's when switched on (serve/native_request.py), else frontend's own
-openai_to_messages, anthropic_to_messages = native_request.converters(openai_to_messages, anthropic_to_messages)
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -160,36 +156,6 @@ HIGH_EFFORT = EFFORT_TEXT["xhigh"]
 LOW_EFFORT = EFFORT_TEXT["low"]
 LOOP_CHECK_EVERY = 512           # output tokens between two looks at the reasoning (at a clean parser boundary)
 LOOP_COVERAGE = 0.25             # the share of the last 2,000 words inside 12-word passages seen three times
-LOOP_HISTORY_WORDS = 30000       # how far back the passages are counted (bounds the cost of a look)
-LOOP_TAIL_CHARS = 2048           # chars at the end of the reasoning also checked for a short period (#1753)
-LOOP_TAIL_PERIOD = 64            # a period at most this long in that tail reads as a fully repeated window
-
-
-def reasoning_repeat_coverage(text):
-    """Coverage of recent words by 12-word passages seen at least three times.
-
-    Only reasoning is supplied. The history (the last LOOP_HISTORY_WORDS words) detects repeated verification passes
-    separated by long code drafts; the recent window excludes old repetitions.  #1753: a loop can also be one long
-    word (a 24k-digit string cycling an 11-digit pattern): the word split makes it a single word and no word count
-    grows, and #606's token run never grows either (the tokenizer has no multi-digit tokens), so before the word
-    count the last LOOP_TAIL_CHARS chars are checked for a period of at most LOOP_TAIL_PERIOD, and a periodic tail
-    reads as full coverage: it is all of the recent output, repeated.
-    """
-    tail = text[-LOOP_TAIL_CHARS:].lower()
-    if len(tail) == LOOP_TAIL_CHARS and any(tail[p:] == tail[:-p] for p in range(1, LOOP_TAIL_PERIOD + 1)):
-        return 1.0
-    words = re.findall(r"\w+|[^\w\s]", text.lower())[-LOOP_HISTORY_WORDS:]
-    width, window = 12, 2000
-    if len(words) < window:
-        return 0.0
-    grams = [tuple(words[i:i + width]) for i in range(len(words) - width + 1)]
-    counts = collections.Counter(grams)
-    start = max(0, len(words) - window)
-    covered = set()
-    for i in range(start, len(grams)):
-        if counts[grams[i]] >= 3:
-            covered.update(range(i, i + width))
-    return len(covered) / (len(words) - start)
 
 
 def focused_recovery_prompt(tok, ids, generated):
@@ -2358,7 +2324,7 @@ def parallel_args(cfg: dict, args: list[str]) -> list[str]:
 
 
 def profile_shape(path: str) -> tuple[int, int] | None:
-    """An expert profile's (layers, experts per layer), from its header (tools/make_profile.py's format), or None
+    """An expert profile's (layers, experts per layer), from its header (the strata-profile format), or None
     when the file is missing, is not one or is shorter than the pairs its header promises."""
     try:
         with open(path, "rb") as f:
@@ -2598,6 +2564,24 @@ class ByteTokenizer:
 
     ALWAYS = ()                                     # specials matched without parse_special (type 4, as <think>)
 
+    def __init__(self):
+        # what libstrata_text's detokenizer and fused step read: every token's bytes in one blob (as NativeTokenizer)
+        pieces = [bytes([i]) for i in range(256)] + [x.encode() for x in self.SPECIALS]
+        offs = [0]
+        for x in pieces:
+            offs.append(offs[-1] + len(x))
+        self._pieces = pieces
+        self.raw_blob = ctypes.create_string_buffer(b"".join(pieces), offs[-1])
+        self.raw_offsets = (ctypes.c_int64 * len(offs))(*offs)
+
+    def __len__(self):
+        return len(self._pieces)
+
+    def token_bytes(self, i):
+        if i < 0 or i >= len(self._pieces):
+            raise IndexError("token id %d is outside the vocabulary (%d)" % (i, len(self._pieces)))
+        return self._pieces[i]
+
     @property
     def control_tokens(self):
         return [s for s in self.SPECIALS if s not in self.ALWAYS]
@@ -2624,34 +2608,6 @@ class ByteTokenizer:
 
 
 # ------------------------------------------------------------------------------------------------ core
-class Detokenizer:
-    """Incremental decode: each token's bytes go through an incremental UTF-8 decoder, which emits the complete
-    characters and holds a multi-byte character split across tokens until it is complete (invalid bytes become
-    U+FFFD, as a whole decode with errors="replace" makes them).  Constant time per token - the old re-decode of
-    every generated id cost 2 ms per token after 8K tokens and 4 ms after 16K (perf-review F-1).  A tokenizer
-    without `token_bytes` (the tests' byte tokenizer) keeps the re-decode."""
-
-    def __init__(self, tok):
-        self.tok, self.ids, self.sent = tok, [], 0
-        self.inc = codecs.getincrementaldecoder("utf-8")(errors="replace") if hasattr(tok, "token_bytes") else None
-
-    def pending(self) -> bool:
-        """A character is split across the tokens so far: its first bytes are held."""
-        if self.inc is not None:
-            return bool(self.inc.getstate()[0])
-        return self.tok.decode(self.ids).endswith("\ufffd")
-
-    def push(self, t: int) -> str:
-        if self.inc is not None:
-            return self.inc.decode(self.tok.token_bytes(t))
-        self.ids.append(t)
-        text = self.tok.decode(self.ids)
-        if text.endswith("�"):
-            return ""
-        delta, self.sent = text[self.sent:], len(text)
-        return delta
-
-
 OPENAI_MAX_STOP = 4                                  # OpenAI's limit on `stop`
 
 
@@ -2673,41 +2629,6 @@ def stop_strings(req: dict) -> list[str]:
     else:
         return []
     return [x for x in stop if x]
-
-
-class StopMatcher:
-    """Cuts the answer's text at the first stop string.  Text that could still be the start of a stop string is held
-    back (only that tail, never more), so a stop string split across tokens or chunks is still found and never sent."""
-
-    def __init__(self, stops: list[str]):
-        self.stops, self.held, self.hit = stops, "", None
-
-    def push(self, text: str) -> str:
-        """-> the text that is safe to send now; after a match, self.hit is the stop string and nothing more comes."""
-        if self.hit is not None:
-            return ""
-        buf = self.held + text
-        first = None
-        for s in self.stops:
-            i = buf.find(s)
-            if i >= 0 and (first is None or i < first[0]):
-                first = (i, s)
-        if first is not None:
-            self.held, self.hit = "", first[1]
-            return buf[:first[0]]
-        keep = 0                                      # the longest end of buf that a stop string starts with
-        for s in self.stops:
-            for k in range(min(len(s) - 1, len(buf)), keep, -1):
-                if buf.endswith(s[:k]):
-                    keep = k
-                    break
-        self.held = buf[len(buf) - keep:] if keep else ""
-        return buf[:len(buf) - keep]
-
-    def flush(self) -> str:
-        held, self.held = self.held, ""
-        return held
-
 
 
 # Windows names that open a device whatever their extension or folder (Microsoft, "Naming Files, Paths, and Namespaces")
@@ -3644,16 +3565,16 @@ class Service:
                 print(f"[strata] thinking capped at {max_new - reserve} of max_tokens {max_new} to leave room for "
                       f"the answer (budget {budget})", flush=True)
                 budget = max(1, max_new - reserve)
-        # libstrata_text's C++ output side when the library is there (STRATA_PY_TOKENIZER=1: the Python classes)
-        parser = native_stream.new_output_parser(thinking=thinking, tools=tools, stream_tools=True,
-                                                 recover=self.tool_call_recovery)
-        detok, n, finish = native_stream.new_detokenizer(self.tok, Detokenizer), 0, "length"
+        # libstrata_text's C++ output side: parser, detokenizer, stop matcher and the fused per-token step
+        parser = native_stream.NativeOutputParser(thinking=thinking, tools=tools, stream_tools=True,
+                                                  recover=self.tool_call_recovery)
+        detok, n, finish = native_stream.NativeDetokenizer(self.tok), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
         stop_list = stop_strings(sampling)
-        stops = native_stream.new_stop_matcher(stop_list, StopMatcher) if stop_list else None
+        stops = native_stream.NativeStopMatcher(stop_list) if stop_list else None
 
-        pipe = native_stream.new_pipe(self.tok, parser, detok, stops)   # detok -> parser -> cut at the stops
+        pipe = native_stream.NativePipe(self.tok, parser, detok, stops)   # detok -> parser -> cut at the stops
         cut = pipe.cut
         opening = []                                    # without thinking the prompt ends with the forced opening:
         if force and not thinking:                      # the parser reads it as if the model had written it
@@ -3809,8 +3730,7 @@ class Service:
                                 if (self.reasoning_loop_recovery and not recovery_count and not fl & 7
                                         and n >= next_loop_check and not fl & (NS_BUF | NS_PENDING | NS_DETOK)):
                                     next_loop_check = n + LOOP_CHECK_EVERY
-                                    repeat_coverage = (native_stream.repeat_coverage if native_stream.enabled()
-                                                       else reasoning_repeat_coverage)(reasoning_text)
+                                    repeat_coverage = native_stream.repeat_coverage(reasoning_text)
                                     if repeat_coverage >= LOOP_COVERAGE:
                                         if self.reasoning_loop_recovery == "stop":
                                             looped = True        # #728: end the reply here, as for a repeated token
@@ -6128,26 +6048,15 @@ def main() -> int:
     if a.engine == "strata" and not (tpath / "vocab.json").exists():
         ap.error(f"the model's tokenizer is missing ({tpath / 'vocab.json'}); run setup again")
     if (tpath / "vocab.json").exists():
-        if os.environ.get("STRATA_PY_TOKENIZER") == "1":       # tests / development: the pure-Python tokenizer
-            import strata_tokenizer as ST
-            vocab = json.loads((tpath / "vocab.json").read_text(encoding="utf-8"))
-            tokens = [None] * len(vocab)
-            for t, i in vocab.items():
-                tokens[i] = t
-            merges = (tpath / "merges.txt").read_text(encoding="utf-8").split("\n")
-            types = json.loads((tpath / "token_type.json").read_text())
-            tok = ST.Tokenizer(tokens, merges, types)
-        else:
-            from serve.native_text import NativeTextError, NativeTokenizer
-            exe_hint = cfg.get("exe")
-            if exe_hint and not os.path.isabs(exe_hint):
-                exe_hint = os.path.join(cfg.get("cwd") or ".", exe_hint)
-            try:
-                tok = NativeTokenizer(tpath, engine_exe=exe_hint)
-            except NativeTextError as e:
-                raise SystemExit(f"[strata] the native tokenizer is unavailable: {e}\n"
-                                 f"[strata] set STRATA_TEXT_LIB to libstrata_text, put it beside the engine, or "
-                                 f"set STRATA_PY_TOKENIZER=1 to use the slow Python tokenizer")
+        from serve.native_text import NativeTextError, NativeTokenizer
+        exe_hint = cfg.get("exe")
+        if exe_hint and not os.path.isabs(exe_hint):
+            exe_hint = os.path.join(cfg.get("cwd") or ".", exe_hint)
+        try:
+            tok = NativeTokenizer(tpath, engine_exe=exe_hint)
+        except NativeTextError as e:
+            raise SystemExit(f"[strata] the native tokenizer is unavailable: {e}\n"
+                             f"[strata] set STRATA_TEXT_LIB to libstrata_text or put it beside the engine")
     hub = hub_from_config(cfg, a.mcp_config)            # before the minutes of loading: a bad entry stops here
     if a.engine == "strata":
         if not cfg:
@@ -6288,7 +6197,7 @@ def main() -> int:
     if mode not in ("model", "on_request"):
         raise SystemExit(f"[strata] config anthropic_thinking must be \"model\" or \"on_request\", not {mode!r}")
     svc.anthropic_think_unasked = mode == "model"
-    recovery = cfg.get("tool_call_recovery", False)     # opt-in: see OutputParser's recover
+    recovery = cfg.get("tool_call_recovery", False)     # opt-in: see the output parser's recover
     if not isinstance(recovery, bool):
         raise SystemExit(f"[strata] config \"tool_call_recovery\" must be true or false, not {recovery!r}")
     svc.tool_call_recovery = recovery

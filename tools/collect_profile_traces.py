@@ -1,4 +1,4 @@
-"""tools/collect_profile_traces.py - routing traces of a varied set of prompts, for tools/make_profile_mix.py.
+"""tools/collect_profile_traces.py - routing traces of a varied set of prompts, for strata-profile-mix (the C++ port).
 
 For every prompt of a corpus (default bench/profile_corpus.json: 45 chat, code, maths, reasoning, writing, science, tool
 use and six-language prompts) it runs the engine once (greedy, --max-new tokens) and keeps the routed experts of the
@@ -11,7 +11,7 @@ CONFIG.json is a run config setup wrote (strata-*.json: "exe", "args", "env", "t
 SYCL engine's STRATA_USAGE_DUMP=PATH, which counts on the device and works with STRATA_VERIFY_NO_HOST; `--mode routing`
 adds `--dump-routing PATH` (the CUDA/HIP engines and the SYCL host path).  Then, for example:
 
-    python tools/make_profile_mix.py OUTDIR/c*.trace:1 --out data/expert-profile-new.bin
+    strata-profile-mix OUTDIR/c*.trace:1 --out data/expert-profile-new.bin
 
 A prompt takes a start-up of the engine (20-60 s) and ~10 s of decoding; 45 prompts are ~30 minutes.  The traces are the
 generated text's routing only (decode windows); the prompt's own routing is not counted.
