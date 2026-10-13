@@ -61,3 +61,6 @@ build-vision-cuda12.bat
 
 /.ccache/
 /.rocm-win/
+
+# machine-specific deploy overrides
+deploy/strata-container.local.conf

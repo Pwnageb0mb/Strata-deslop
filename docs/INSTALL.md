@@ -34,8 +34,7 @@ the engine for your GPU (asks first; 20-40 minutes once). More: [details](DETAIL
 2. Double-click **`START-HERE.bat`**.
 3. Answer a few questions - or just press Enter each time for the recommended choice ([the questions](#setups-questions)).
 
-Then it downloads everything (the model is ~70 GB, so the first time takes a while - you can stop and it picks up
-where it left off) and **starts the model**. Your browser opens the Strata app at `http://127.0.0.1:8080`.
+Then it sets everything up from the model files already on this PC (the ~70 GB model is never downloaded: [put it in place first](#installing-without-a-network)) and **starts the model**. Your browser opens the Strata app at `http://127.0.0.1:8080`.
 
 > **While the model starts, your PC can be slow or stop responding for 1-3 minutes** (longest the first time): Strata
 > loads 35-55 GB into your RAM and locks part of it for the graphics card. That's normal - wait, and don't close the
@@ -97,7 +96,7 @@ The same idea, in a container (NVIDIA cards).
    `docker build -t strata --build-arg CUDA_ARCHITECTURES=89 .` builds for one card only (faster).
    The default covers RTX 30 (86), RTX 40 (89), RTX 50 (120) and A-series (80); a card outside that
    set needs a rebuild with its own arch. Add `--build-arg BUILD_VISION=0` to skip the image encoder.
-3. Run (the first start downloads the ~70 GB model, then starts; later starts go straight to serving):
+3. Run (the model files must already be in the `/data` volume, see [Installing without a network](#installing-without-a-network); the first start then prepares them and starts; later starts go straight to serving):
    `docker run --rm --gpus all -p 8080:8080 --ulimit memlock=-1 -v strata-data:/data strata`
 
    The setup choices are env vars: `-e MODEL=IQ2_XS -e FAMILY=qwen -e CONTEXT=32768 -e VISION=no`
@@ -165,20 +164,33 @@ What differs in that build (`STRATA_ISA_FLOOR=avx` or `none`, chosen from the CP
 By hand: `cmake ... -DSTRATA_ISA_FLOOR=avx` (or `none`) builds it; `STRATA_ISA_FLOOR=avx` set for setup builds it on
 any PC (to try it). Problems and results on real hardware are welcome as GitHub issues.
 
+## Installing without a network
+
+Setup never downloads a model, an engine or llama.cpp: every file it needs must already be on this PC, and a file that is missing stops setup and says what to put there and where. `STRATA_OFFLINE=1` and `--offline` are still accepted and do nothing.
+
+The files, and where they go:
+
+- **The model:** the GGUF files in a folder you name with `--gguf-dir`, or in the data folder's `models/`
+  (see "Where things are stored"). Nothing is rebuilt from a local GGUF that was already prepared.
+- **llama.cpp's source:** `third_party/llama.cpp` (ggml, gguf-py) at commit `3cf03257f219afbe7334045ff7c6a06ac68c627d`, from a mirror or another PC (or point `STRATA_LLAMA_DIR` at it); see "Where things are stored", below.
+- **The engine:** always compiled here (a CUDA toolkit, or on AMD the build tools, see [AMD cards](#amd-cards)); there is no ready-made one to put in place.
+- **The Python packages:** a folder of `.whl` files (`pip download -r requirements.txt -d <folder>` on a PC with a
+  network), named with `STRATA_WHEELS=<folder>`. pip then installs with `--no-index --find-links`, so no index is
+  contacted; this is the way to install with no index at all.
+
+The **server** itself does not phone home: it makes no request of its own, and a plain start on an installed model
+does not either (the engine and the packages are already there). The one thing it can reach is an MCP server you add to the run config (off unless you add one).
+
 ## Updating
 
 **`UPDATE.bat`** (Linux: `./update.sh`) updates Strata without starting the model - for when the GPU is busy with
-something else, or you just want the new version ready. In a `git clone` it runs `git pull`, then does what
-`START-HERE.bat` does before a start: the engine (a new ready-made one when the new version needs it; on Linux a
-compiled engine is compiled again when its source changed), the Python packages, and each installed model's settings
-and draft subset. The model files are not touched (at most a new engine is downloaded) and no question is asked.
+something else, or you just want the new version ready. It does what `START-HERE.bat` does before a start: the engine (compiled again when its source changed), the Python packages, and each installed model's settings and draft subset. The model files are not touched and no question is asked. It does not pull new code: update the folder first (`git pull`, or the new zip).
 Close the model's window first (a running engine cannot be replaced); start the model later with `START-HERE.bat` as
-usual. In a copy that was downloaded as a zip it says to download the new zip (below): it cannot fetch new files
-itself.
+usual.
 
 Or by hand: download the new version and unzip it anywhere (or `git pull`), then run `START-HERE.bat` (Linux:
 `./setup.sh`) in it. The model files are kept in a `Strata-data` folder next to your Strata folder, so a new copy
-finds them and sets itself up the same way - nothing big is downloaded again. On Linux after a `git pull`, setup
+finds them and sets itself up the same way - nothing big has to be copied again. On Linux after a `git pull`, setup
 compiles the engine again when its source changed (a minute or two for the changed files); if that compile fails, it
 says so and starts the engine you had.
 
@@ -199,9 +211,7 @@ says so and starts the engine you had.
 - **Where that data folder is:** `%APPDATA%\Strata\settings.json` on Windows, `~/.config/strata/settings.json` on
   Linux ([details](DETAILS.md#before-you-start)).
 - **The program itself:** `.venv/`, `engine/` and `third_party/` in the Strata folder.
-- **Where github.com cannot be reached:** a build from source downloads llama.cpp's source (ggml, gguf-py) from
-  GitHub at the commit `LLAMA_CPP_COMMIT` in `setup.py` names. Put that commit's tree in `third_party/llama.cpp`
-  yourself (from a mirror or another PC) and setup uses it instead (#585).
+- **llama.cpp's source:** the build reads `third_party/llama.cpp` (or the folder `STRATA_LLAMA_DIR` names) at the commit `LLAMA_CPP_COMMIT` in `setup.py` names. Setup never downloads it: put that commit's tree there yourself, from a mirror or another PC (#585).
 
 ## Setup's questions
 
@@ -272,23 +282,12 @@ free the most.
 **Model files downloaded by hand, or from a mirror (#495):** setup's step 5 prints the folder it expects them in
 (`Strata-data\models\<SIZE>\`, e.g. `Strata-data\models\IQ3_XXS\`): put them there with their original names, or
 point setup at them with `--gguf-dir`. To see what a file really holds before using or downloading it, `--inspect`
-reads only its headers (a few MB, also over the network: a file, a folder, a URL, `ms:owner/repo` for ModelScope or
-`hf:owner/repo`): every weight group's real bits per weight and storage types, and whether it is one of the files setup
+reads only its headers (a few MB: a local file or a folder): every weight group's real bits per weight and storage types, and whether it is one of the files setup
 installs (under any name), stored like one of them, or not one Strata runs (another architecture, or experts in a
 format no Strata kernel reads). A name says little: Unsloth's `UD-IQ3_XXS` stores its routed experts at 3.22 bits per
-weight, `UD-Q4_K_XL` at 5.10, the original `Q2_0` at 2.25 and `IQ3_S` at 3.33. To let setup download from a Hugging Face mirror itself, set `HF_ENDPOINT`
-first (Windows: `set HF_ENDPOINT=https://hf-mirror.com`, Linux: `export HF_ENDPOINT=https://hf-mirror.com`): the same
-pinned revisions and checks apply, and the MTP draft layer comes from there too.
+weight, `UD-Q4_K_XL` at 5.10, the original `Q2_0` at 2.25 and `IQ3_S` at 3.33.
 
-**From ModelScope (mainland China):** every repository setup downloads from (the GSQ-RCO models, Swift 1.5, the
-Coder, Unsloth's files, and the original checkpoint the MTP draft layer is taken from) is on
-[ModelScope](https://www.modelscope.cn) under the same name, with the same files. Setup never switches to it by
-itself (a download that fails says how): use `--source modelscope` (`STRATA_SOURCE=modelscope`). ModelScope serves a
-repository's current files (no pinned revision), so each file is checked against the SHA-256 ModelScope publishes for
-it (self-attested: a changed upstream repository would carry its own hash), and the MTP tensors against the
-pinned checkpoint's own hashes, as from Hugging Face; setup says so when you choose it. Measured on a PC in mainland
-China on 2026-10-05: 11-14 MB/s; the Q2_0 and IQ3_S files matched their published SHA-256, and Q2_0's shard 1 matched
-the copy from hf-mirror.com.
+**Getting the files yourself:** setup does not download them, so take them from ModelScope, Hugging Face or a mirror (the same repository names, the same files), and check them against the SHA-256 the repository publishes.
 
 On Linux the same options go to `./setup.sh`. `START-HERE.bat --help` lists them all. The server's own settings
 (sharing the GPU with games, MCP tools, CORS, API keys, the API itself) are in the [details](DETAILS.md#using-it).

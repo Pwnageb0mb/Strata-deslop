@@ -1,0 +1,33 @@
+{
+ "model": {
+  "name": "model.gguf",
+  "sha256": "abdc0159a1abcfcac75e8c9620ec7fd46293ea17ea5a1c3d55b2c2a2062f746f",
+  "bytes": 10688
+ },
+ "pack": {
+  "conversions.json": {
+   "sha256": "3216549135cd4dfa371a1b124d2b0303864d52a6079149c74691d4f13e2135ed",
+   "bytes": 1760
+  },
+  "dense.bin": {
+   "sha256": "6f66352a46f1429ce7a493d026bb566441a9559819775dc0f15e1e053df76757",
+   "bytes": 4096
+  },
+  "experts.bin": {
+   "sha256": "fc3c2547bd57ac363f8f3826c8e8322ab85c69843b3a4baa1234564d1ee0ed20",
+   "bytes": 3264
+  },
+  "experts.bin.src.json": {
+   "sha256": "94ed7d04409e08073158028459ba3de54302dd1621db5079e54dd575c040d1cf",
+   "bytes": 209
+  },
+  "index.txt": {
+   "sha256": "47588be825659d9732acf63f2dff9e7cc1a59ab69a8bd410e8a23618c8ba0886",
+   "bytes": 670
+  },
+  "native_experts.txt": {
+   "sha256": "74bdc5ffe4026dd64ed99e3b21aeb0f17784e22e583561c3d3222c11bbf833c6",
+   "bytes": 218
+  }
+ }
+}

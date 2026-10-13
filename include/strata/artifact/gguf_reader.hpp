@@ -237,8 +237,9 @@ struct TensorInfo {
 class Cursor {
 public:
     Cursor(const uint8_t* base, size_t size) : base_(base), size_(size) {}
+    Cursor(const uint8_t* base, size_t size, size_t at) : base_(base), size_(size), pos_(at) {}
     void need(size_t n) const {
-        if (pos_ + n > size_) throw std::runtime_error("GGUF: unexpected end of file in header");
+        if (pos_ > size_ || n > size_ - pos_) throw std::runtime_error("GGUF: unexpected end of file in header");
     }
     template <class T> T read() {
         need(sizeof(T));
@@ -271,6 +272,7 @@ struct MetaValue {
     std::string s;                 // string payloads
     MetaType elem = MetaType::U32; // arrays
     uint64_t count = 0;
+    std::size_t at = 0;            // arrays: the byte offset of the first item, for GgufFile::array_items
     std::vector<MetaValue> items;
     bool is_num() const { return type != MetaType::STRING && type != MetaType::ARRAY; }
     double num() const { return (type == MetaType::F32 || type == MetaType::F64) ? f : (double)u; }
@@ -324,10 +326,14 @@ inline MetaValue read_value(Cursor& c, MetaType t, int depth = 0) {
         v.elem = (MetaType)c.read<uint32_t>();
         v.count = c.read<uint64_t>();
         if (v.count > (1u << 24)) throw std::runtime_error("GGUF: implausible array length");
+        v.at = c.pos();                             // where the items start, for array_items()
         v.items.reserve((size_t)std::min<uint64_t>(v.count, 64));
         for (uint64_t i = 0; i < v.count; ++i) {
             MetaValue e = read_value(c, v.elem, depth + 1);
-            if (i < 64) v.items.push_back(std::move(e)); // keep a sample; the count is what matters
+            // a SAMPLE: the engine's metadata needs the count, not the contents, and a vocabulary is 248,320
+            // strings.  A caller that needs the array itself calls GgufFile::array_items(key) - reading `items`
+            // as if it were the array is how a tool comes to see 64 tokens of 271 and not notice.
+            if (i < 64) v.items.push_back(std::move(e));
         }
         break;
     }
@@ -369,6 +375,20 @@ public:
     const MetaValue* get(const std::string& key) const {
         auto it = meta_.find(key);
         return it == meta_.end() ? nullptr : &it->second;
+    }
+
+    /// EVERY item of an array value, read again from the mapped header.  `MetaValue::items` holds a sample of at
+    /// most 64 - enough for the engine's metadata, not for a vocabulary of 248,320 tokens, where reading the
+    /// sample as if it were the array gives a tokenizer that is quietly missing most of its vocabulary.  Empty
+    /// when `key` is absent or is not an array.
+    std::vector<MetaValue> array_items(const std::string& key) const {
+        const MetaValue* v = get(key);
+        if (v == nullptr || v->type != MetaType::ARRAY) return {};
+        Cursor c(base_, size_, v->at);
+        std::vector<MetaValue> out;
+        out.reserve((size_t) v->count);
+        for (uint64_t i = 0; i < v->count; ++i) out.push_back(read_value(c, v->elem, 1));
+        return out;
     }
     const uint8_t* tensor_data(const TensorInfo& t) const { return base_ + data_start_ + t.offset; }
 
@@ -433,7 +453,10 @@ private:
             MetaType t = (MetaType)c.read<uint32_t>();
             meta_.emplace(std::move(key), read_value(c, t));
         }
-        tensors_.reserve((size_t)n_tensors);
+        // a tensor record is at least 32 bytes (name length, n_dims, one dim, type, offset), so a count the file
+        // cannot hold is corrupt; and the reserve is capped so a lying count cannot ask for a huge allocation
+        if (n_tensors > (size_ - c.pos()) / 32) throw std::runtime_error("GGUF: tensor count exceeds the file size");
+        tensors_.reserve((size_t)std::min<uint64_t>(n_tensors, 1u << 16));
         // GGUF has no index to arbitrate between two tensors of one name: find() is first-match, so a
         // duplicate would silently win by position.  Refuse the file at open instead, naming both.
         std::set<std::string> names;
@@ -453,6 +476,9 @@ private:
         uint64_t align = 32;
         if (const MetaValue* a = get("general.alignment"))
             if (a->u) align = a->u;
+        if ((align & (align - 1)) != 0 || align > (1u << 20))
+            throw std::runtime_error("GGUF: general.alignment " + std::to_string(align) +
+                                     " is not a power of two up to 1 MiB");
         alignment_ = align;
         data_start_ = (c.pos() + align - 1) / align * align;
         if (data_start_ > size_) {

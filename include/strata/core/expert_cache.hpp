@@ -24,10 +24,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "strata/core/expert_profile.hpp"
 #include "strata/core/vmm.hpp"
 
 namespace strata::core {
@@ -37,40 +39,10 @@ namespace strata::core {
 /// in the two places that use it.
 inline constexpr int32_t kNotResident = -1;
 
-/// **THE STATIC RESIDENCY PLAN, READ BACK FROM THE FILE `tools/make_profile.py` WROTE.**
-///
-/// `profile.bin` is `STRP`, then `version, n_layers, n_expert, slots, n_ranked`, then `n_ranked` `(layer,
-/// expert)` pairs ranked by descending routing frequency, then a `n_layers x n_expert` frequency table.
-///
-/// **WHY A PROFILE AND NOT THE COMPULSORY-MISS POLICY THIS ENGINE ALREADY HAD.**  Compulsory-miss fills with
-/// the first `S` DISTINCT experts the run happens to route, which on this workload is whatever the prompt
-/// touched first - it measured `h = 0.4864`.  A profile ranked by frequency over a whole trace is what the
-/// plan's `0.6447` refers to, and the CPU's half of the drain is linear in `h`, so the gap is worth about
-/// 4 ms of drain.  The point of reading it from a file is that a profile built on ONE prompt can be scored on
-/// ANOTHER, which is the only way to know whether it transfers.
-///
-/// The frequency table is not returned: it is the profile's own working, and the engine measures `h` by
-/// running rather than by re-deriving what the file claims.
-bool read_expert_profile(const std::string& path, int64_t n_layers, int64_t n_expert,
-                         std::vector<std::pair<int32_t, int32_t>>& ranked, int64_t& slots, std::string& err);
-
-/// #477 (--expert-profile-save): what the adaptive tier learned, as a profile ranking EVERY (layer, expert) pair -
-/// the experts resident in VRAM now first (where the swaps left the cache), then the rest; within each, by `heat`
-/// (the routing the adaptive tier counted since the start, descending), then by `prior` (the profile the engine
-/// started from: an expert this run never routed keeps its old place), then by index.  A start from it begins
-/// where this one ended; one with more slots adds the hottest of the rest, one with fewer keeps the hottest.
-/// `resident` and `heat`: n_layers x n_expert entries (`heat` may be empty: no counts, the prior decides).
-std::vector<std::pair<int32_t, int32_t>> rank_learned_profile(int64_t n_layers, int64_t n_expert,
-                                                              const std::vector<uint8_t>& resident,
-                                                              const std::vector<double>& heat,
-                                                              const std::vector<std::pair<int32_t, int32_t>>& prior);
-
-/// #477: writes `ranked` in tools/make_profile.py's format, byte for byte: `STRP`, `1, n_layers, n_expert,
-/// n_ranked, n_ranked` (uint32), the pairs (uint16 layer, uint16 expert), then the n_layers x n_expert int32 table
-/// of each pair's rank (-1: not ranked).  Atomically: a `<path>.tmp` beside it, renamed over `path` once complete,
-/// so a reader (the next start) never sees half a file.  False with `err` when it could not be written.
-bool write_expert_profile(const std::string& path, int64_t n_layers, int64_t n_expert,
-                          const std::vector<std::pair<int32_t, int32_t>>& ranked, std::string& err);
+/// The profile's format, its ranking and the routing trace it is built from live in
+/// `strata/core/expert_profile.hpp` - file I/O and arithmetic with no GPU dependency, which is why a CPU-only
+/// tool (the profile builder, the eviction benchmark) can link them.  `read_expert_profile`,
+/// `write_expert_profile` and `rank_learned_profile` used to be declared here; the cache uses them from there.
 
 /// Free device memory for the expert cache.  On a unified memory system - one memory for the CPU and the GPU, such as
 /// the DGX Spark (GB10); CUDA reports it as cudaDevAttrIntegrated - cudaMemGetInfo counts only MemFree, not the page cache - which, with the experts read from the GGUF in place, is mostly those
@@ -188,6 +160,27 @@ public:
     /// against a `cudaStreamNonBlocking` one.  The first version used the async form and `verify_slot` refused
     /// the whole run with "slot 0 differs from the arena at byte 0" - which is the check doing its job.
     bool fill_slot_blocking(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes = 0);
+    /// One slot of a pipelined startup fill.  `host` may be null when the `resolve` callback of fill_slots_pipelined
+    /// supplies the pointer.  `tag` is the caller's own index (reported back on a failure).
+    struct FillJob {
+        int32_t slot = -1;
+        int64_t bytes = 0;      ///< the blob's own size (0 = the slot)
+        const uint8_t* host = nullptr;
+        int64_t tag = 0;
+    };
+    /// The startup profile fill, pipelined: `threads` readers each take jobs, `resolve(job)` hands them the host bytes
+    /// (a mapped file's pages fault in on that thread, so the reads overlap), the bytes are copied into the reader's own
+    /// ring of page-locked staging buffers and sent with cudaMemcpyAsync on the reader's own stream, a buffer reused
+    /// only after its copy's event.  Every stream has finished when this returns, so verify_slot (legacy stream) sees
+    /// the slots.  Same bytes as `fill_slot_blocking` per job.  `threads` 0 (or no page-locked memory): the blocking copy
+    /// per job in order, as before.  `resolve` runs on the reader threads (it must be thread-safe) unless threads is 0.
+    /// Returns false with `err` set and `failed_tag` = the lowest failing job's tag.
+    /// Reader threads for the pipelined fill: STRATA_FILL_THREADS (0 = the old blocking copies, 1 = one reader), default
+    /// min(16, hardware threads).
+    static int fill_threads_default();
+    bool fill_slots_pipelined(const std::vector<FillJob>& jobs,
+                              const std::function<const uint8_t*(const FillJob&)>& resolve, int threads,
+                              std::string& err, int64_t& failed_tag);
     /// perf-review D-4: `fill_slot_blocking`'s copy on the same (legacy) stream, but queued: many slots are refilled
     /// with one `sync_queued` at the end instead of a wait per slot. Same ordering against earlier work, same bytes.
     bool fill_slot_queued(int32_t slot, const uint8_t* host_blob, std::string& err, int64_t bytes = 0);

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Entry point for the Strata container. The engine is compiled during docker
-# build and lives in the image, so the first start only downloads the model.
+# build and lives in the image; the model's GGUF files must already be on the /data volume (or in GGUF_DIR).
 # The install config is kept on the /data volume so a recreated container skips
 # the setup pass and goes straight to serving.
 set -e
@@ -71,7 +71,7 @@ elif [ "${REINSTALL:-0}" = "1" ] || [ ! -f "$cfg" ]; then
   if [ -n "$GGUF_DIR" ]; then
     echo "Setting up $tag from the GGUF files in $GGUF_DIR (the engine is already in the image)."
   else
-    echo "Setting up $tag: downloading the model (~70 GB; the engine is already in the image)."
+    echo "Setting up $tag: it needs its GGUF files already in $STRATA_DATA (or GGUF_DIR); nothing is downloaded (the engine is already in the image)."
   fi
   set -- --family "$FAMILY" --model "$MODEL" --context "$CONTEXT" --vision "$VISION" \
     --data-dir "$STRATA_DATA" --host "$HOST" --api-key "$API_KEY" \

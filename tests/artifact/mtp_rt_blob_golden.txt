@@ -1,0 +1,9 @@
+# mtp_rt blob golden: tools/mtp_rt.py's blob_of at the production geometry (gen_mtp_rt_blob_golden.py)
+H 2560
+FF 640
+NE 512
+pattern (k * 37 + 11) & 0xFF
+gu_bytes 921600
+dn_bytes 460800
+blob_bytes 1382400
+sha256 297f49c42a9c85a9f693b3ceca8ba3a474990e61df47e7b49d14dbcb16eecdca

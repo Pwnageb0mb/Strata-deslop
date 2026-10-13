@@ -12,7 +12,7 @@ the graphics card, and works out how much of the model fits on your GPU. The mou
 PC, close other programs (browsers use a lot of RAM) and try again. If it keeps happening, pick a smaller size (Q2_0
 or IQ2_XS).
 
-**It stopped while downloading or installing.**
+**It stopped while installing.**
 Run `START-HERE.bat` (Linux: `./setup.sh`) again. It continues where it stopped.
 
 **It says the NVIDIA driver is too old.**
@@ -30,17 +30,9 @@ On a clean Windows 11, Smart App Control refuses programs that are not signed, a
 settings; it cannot be turned back on without a reset of Windows), or, if only the image encoder is blocked, run
 `START-HERE.bat --setup --vision no`.
 
-**A new engine misbehaves after an update.**
-An update keeps the engine it replaced in `engine\.previous` (one generation, about 210 MiB).
-`python setup.py --rollback-engine` puts it back (and keeps the newer one there: run it again to go forward) (#670).
-
-**UPDATE.bat / update.sh say "git pull did not succeed", or "has no commit in common" (#1276).**
+**`git pull` says it has no commit in common (#1276).**
 The repository's history was cleaned up on 2026-10-06, so a clone made before that cannot be updated with `git pull`.
-The 0.1.40.2 scripts handle it: when no tracked file is edited they keep your old commits in the branch
-`pre-cleanup-backup` and move the clone to the new history; otherwise they print the two commands for you. Your models,
-settings and engine are untracked files and are never touched. An older UPDATE.bat / update.sh (before 0.1.40.2) cannot
-do this itself: run these once in the Strata folder, then use UPDATE.bat as usual (add `git stash` first if `git status`
-lists edited files):
+Your models, settings and engine are untracked files and are never touched. Run these once in the Strata folder (add `git stash` first if `git status` lists edited files), then `git pull` as usual:
 
     git fetch origin
     git branch pre-cleanup-backup
@@ -66,8 +58,6 @@ PC); `STRATA_READ_AHEAD=0` turns that off. On Linux with transparent huge pages 
 for `MADV_HUGEPAGE` on top (a fragmented machine spent minutes compacting memory, #771); `STRATA_NO_ARENA_THP=1` skips
 that request on any setting.
 
-**Setup says the engine does not match GitHub's checksum.**
-Setup checks the downloaded ready-made engine against the SHA-256 GitHub publishes. On a mismatch the file is corrupt or was changed on the way, so setup deletes it and stops; run setup again to download it afresh. If GitHub gives no checksum (offline, rate limited, your own mirror), setup warns and installs anyway. `STRATA_SKIP_SHA256=1` skips the check, only if you insist.
 
 ## While it answers
 

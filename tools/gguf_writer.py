@@ -31,7 +31,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from gguf_reader import GGUF_MAGIC, GGUFFile  # noqa: E402
 
 # ggml_type ids we can write. Values match GGML_TYPES in gguf_reader.py.
-TYPE_IDS = {"F32": 0, "F16": 1, "Q2_0": 42}
+TYPE_IDS = {"F32": 0, "F16": 1, "BF16": 30, "Q2_0": 42}
 DEFAULT_ALIGNMENT = 32
 
 _META_IDS = {"u8": 0, "i8": 1, "u16": 2, "i16": 3, "u32": 4, "i32": 5, "f32": 6,
@@ -107,6 +107,18 @@ class GGUFWriter:
     def add_f32(self, name: str, arr: np.ndarray) -> None:
         a = np.ascontiguousarray(arr, dtype="<f4")
         self.tensors.append(_Tensor(name, list(a.shape), "F32", a.tobytes()))
+
+    def add_bf16(self, name: str, arr: np.ndarray, shape: list[int] | None = None) -> None:
+        """BF16 (ggml type 30), from the STORED uint16 patterns.
+
+        A tensor the checkpoint ships as BF16 is written from its own patterns: the writer carries bytes and does
+        not decide a rounding, so a value that came out of a checkpoint comes back bit for bit.  `shape` is for a
+        tensor whose stored layout is not its GGUF shape, as add_q2_0's is.
+        """
+        a = np.ascontiguousarray(arr)
+        if a.dtype != np.uint16:
+            a = a.astype("<u2")
+        self.tensors.append(_Tensor(name, list(shape if shape is not None else a.shape), "BF16", a.tobytes()))
 
     def add_q2_0(self, name: str, arr: np.ndarray, shape: list[int]) -> None:
         """`arr` is (rows, in_features) row-major with every row `shape[0]` long; `shape` is the FULL
@@ -193,8 +205,10 @@ def _selfcheck() -> int:
 
     A = rng.standard_normal((16, 64)).astype(np.float32)
     B = rng.standard_normal((4, 8)).astype(np.float32)
-    w.add_q2_0("blk.0.ffn_gate_exps.weight", A, 64)
+    w.add_q2_0("blk.0.ffn_gate_exps.weight", A, [64, 16])   # in_features, rows - the FULL GGUF shape
     w.add_f32("blk.0.ssm_a", B)
+    BF = (np.arange(8, dtype=np.uint16) * 4111 + 3).astype("<u2")   # stored patterns, not floats
+    w.add_bf16("blk.0.attn_q_norm.weight", BF)
 
     p = pathlib.Path(__file__).resolve().parent.parent / "bench" / "tiny-selftest.gguf"
     w.write(p)
@@ -226,6 +240,17 @@ def _selfcheck() -> int:
             print("  FAIL Q2_0 is not a fixed point under requantization"); ok = False
         else:
             print("  Q2_0 fixed point: PASS (requantizing the dequantized values is exact)")
+    t = by.get("blk.0.attn_q_norm.weight")
+    if t is None or t.type_name != "BF16" or t.shape != [8]:
+        print(f"  FAIL bf16 tensor dir: {t}"); ok = False
+    else:
+        with p.open("rb") as fh:
+            fh.seek(g.data_start + t.offset)
+            raw = fh.read(16)
+        if raw != BF.tobytes():
+            print("  FAIL bf16 bytes do not round trip"); ok = False
+        else:
+            print("  BF16 bytes: PASS (the stored patterns come back bit for bit)")
     print("SELF-CHECK " + ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
 

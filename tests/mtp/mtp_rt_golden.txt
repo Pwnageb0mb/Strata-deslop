@@ -1,0 +1,22 @@
+# mtp_rt golden: tools/mtp_rt.py's own runtime files (gen_mtp_rt_golden.py)
+# the fixture keeps the PRODUCTION geometry (H, FF) and scales only NE, to 1
+H 2560
+FF 640
+NE 1
+blob 1382400
+fixture mtp-fixture.gguf bytes 1387456
+sha256 9c921f4998642706c2b804da61522901b86172a4baab6e2c5bc85f9df873165f
+file experts.bin bytes 1382400 sha256 5a57044eaca882c512609b0ccd6c7d627c114d4ac14c078645996ca2acee5277
+file dense.bin bytes 2816 sha256 ed3833266300216363e1b0b2b7d6a8902a41d17d3a90068fc7d34b46f8e9fab8
+dense_txt_sha256 eb3321c5fbdf442e9bd3a48bb1b20181245cec25727b4fef7395ad0c13320e8b
+stdout experts.bin 1382400 B, dense.bin 2816 B, 3 tensors -> <out>
+stdout   self_attn.q_proj.weight q8_0 64 32 0 2176
+stdout   hc_gate.weight bf16 16 8 2304 256
+stdout   attn_norm.weight f32 1 64 2560 256
+q8_0 values 256 blocks 8 bytes 272
+q8_0_sha256 e08163ded61883f6f58a7adbd900d330514ec2d8af4955a032da3fc8b160caf9
+q8_0_first 4d2681df3d9af856b41270cd2b89e745a2005ebb1977d53390ee4caa0866c3217fdc
+# dense.txt-begin
+self_attn.q_proj.weight q8_0 64 32 0 2176
+hc_gate.weight bf16 16 8 2304 256
+attn_norm.weight f32 1 64 2560 256

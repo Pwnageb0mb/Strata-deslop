@@ -1,0 +1,39 @@
+[
+ {
+  "name": "mtp.layers.0.input_layernorm.weight",
+  "file": "mtp_layers_0_input_layernorm_weight.bf16",
+  "shape": [
+   4,
+   8
+  ],
+  "sha256": "d1a6b2e4a7719478673bc9e3fbab828161b16cdb4be0351a5ac575afa123e4a5"
+ },
+ {
+  "name": "mtp.layers.0.mlp.experts.down_proj",
+  "file": "mtp_layers_0_mlp_experts_down_proj.bf16",
+  "shape": [
+   3,
+   8,
+   64
+  ],
+  "sha256": "d55cbabf311c6d85297d448e62f0a830445d8c70a1ee523eeeed051b4efe9755"
+ },
+ {
+  "name": "mtp.layers.0.mlp.experts.gate_up_proj",
+  "file": "mtp_layers_0_mlp_experts_gate_up_proj.bf16",
+  "shape": [
+   3,
+   4,
+   128
+  ],
+  "sha256": "46fcdc5d84cf3fb2030894bd116f7c7a322f94a19904dd5b112cb270ff18fd23"
+ },
+ {
+  "name": "mtp.layers.0.self_attn.q_norm.weight",
+  "file": "mtp_layers_0_self_attn_q_norm_weight.bf16",
+  "shape": [
+   128
+  ],
+  "sha256": "d6c49346fba68d586d8b6bcbe197223b37a868321f18b0ef70f334a51b79d4de"
+ }
+]

@@ -37,32 +37,148 @@ class TemplateRequestError(jinja2.exceptions.TemplateError, ValueError):
     client gets a 400 with the template's message instead of a dropped connection (#365)."""
 
 
+class _NativeFallback(Exception):
+    """The native renderer cannot do this template/input (not a client error): render it with jinja2 instead."""
+
+
+class _NativeTemplate:
+    """The chat template in libstrata_text (include/strata/text/strata_template.h): llama.cpp's Jinja engine."""
+
+    ABI_VERSION = 1
+
+    def __init__(self, source: str):
+        import ctypes
+        if os.environ.get("STRATA_PY_TOKENIZER") == "1":
+            raise _NativeFallback("STRATA_PY_TOKENIZER=1")
+        try:
+            from serve import native_text
+        except ImportError:                                     # run as a script from serve/
+            import native_text
+        path = native_text.find_library()
+        if path is None:
+            raise _NativeFallback("libstrata_text not found")
+        c = ctypes
+        try:
+            lib = c.CDLL(str(path))
+            lib.strata_template_abi_version.restype = c.c_int
+            if lib.strata_template_abi_version() != self.ABI_VERSION:
+                raise _NativeFallback(f"{path} has another template ABI version")
+            lib.strata_template_error.restype = c.c_char_p
+            lib.strata_template_error_kind.restype = c.c_int
+            lib.strata_template_load.argtypes = [c.c_char_p, c.c_int64]
+            lib.strata_template_load.restype = c.c_void_p
+            lib.strata_template_free.argtypes = [c.c_void_p]
+            lib.strata_template_free.restype = None
+            lib.strata_template_render.argtypes = [c.c_void_p, c.c_char_p, c.c_char_p, c.c_char_p, c.c_int]
+            lib.strata_template_render.restype = c.c_int64
+            lib.strata_template_result.argtypes = [c.c_void_p, c.c_int64]
+            lib.strata_template_result.restype = c.c_int64
+        except (OSError, AttributeError) as e:
+            raise _NativeFallback(f"cannot load {path}: {e}") from e
+        self._lib, self._c, self.path = lib, c, path
+        raw = source.encode("utf-8")
+        self._h = lib.strata_template_load(raw, len(raw))
+        if not self._h:
+            raise _NativeFallback(f"native template parse failed: {self._error()}")
+
+    def _error(self) -> str:
+        return (self._lib.strata_template_error() or b"").decode("utf-8", "replace")
+
+    def __del__(self):
+        try:
+            if getattr(self, "_h", None):
+                self._lib.strata_template_free(self._h)
+                self._h = None
+        except Exception:                                       # noqa: BLE001 - interpreter shutdown
+            pass
+
+    def render(self, messages, tools, add_generation_prompt, kwargs) -> str:
+        def dump(x):
+            return json.dumps(x, ensure_ascii=False).encode("utf-8", "replace")
+        lib = self._lib
+        n = lib.strata_template_render(self._h, dump(messages), None if tools is None else dump(tools),
+                                       dump(kwargs) if kwargs else None, 1 if add_generation_prompt else 0)
+        if n < 0:
+            if lib.strata_template_error_kind() == 1:
+                raise TemplateRequestError(self._error())
+            raise _NativeFallback(self._error())
+        buf = self._c.create_string_buffer(max(n, 1))
+        lib.strata_template_result(buf, n)
+        return buf.raw[:n].decode("utf-8", "replace")
+
+
 class ChatTemplate:
-    """The model's chat template, rendered with the same Jinja settings as transformers' apply_chat_template."""
+    """The model's chat template, rendered with the same Jinja settings as transformers' apply_chat_template.
+
+    With libstrata_text available it is rendered by llama.cpp's Jinja engine in C++ (STRATA_PY_TOKENIZER=1 keeps
+    jinja2); a template or input the native engine cannot handle is rendered by jinja2 as before."""
 
     def __init__(self, path: str | Path):
-        def raise_exception(message):
-            raise TemplateRequestError(message)
-
-        def tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
-            return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent, separators=separators, sort_keys=sort_keys)
-
-        env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, extensions=["jinja2.ext.loopcontrols"])
-        env.filters["tojson"] = tojson
-        env.globals["raise_exception"] = raise_exception
         self.source = Path(path).read_text(encoding="utf-8")
-        self.template = env.from_string(self.source)
+        self._jinja_template = None
+        self._jinja_lock = threading.Lock()
+        self._native_fallback_logged = False
+        try:
+            self._native = _NativeTemplate(self.source)
+        except _NativeFallback as e:
+            LOGGER.debug("chat template: using jinja2 (%s)", e)
+            self._native = None
+        if self._native is None:
+            self._jinja()                                       # a bad template fails here, as before
+        self.engine = "native" if self._native is not None else "jinja2"
         self.caps = self._detect_caps()
+
+    def _note_native_fallback(self, why: str) -> None:
+        """A render the native engine declined goes to jinja2 (same output).  The first time is one log line, so a
+        template that always falls back is not silent; after that it is a debug line."""
+        if not self._native_fallback_logged:
+            self._native_fallback_logged = True
+            LOGGER.warning("chat template: %s; rendering with jinja2 (further fallbacks are logged at debug level)", why)
+        else:
+            LOGGER.debug("chat template: %s; using jinja2", why)
+
+    def _jinja(self):
+        with self._jinja_lock:
+            if self._jinja_template is None:
+                def raise_exception(message):
+                    raise TemplateRequestError(message)
+
+                def tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
+                    return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent, separators=separators,
+                                      sort_keys=sort_keys)
+
+                env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True,
+                                                    extensions=["jinja2.ext.loopcontrols"])
+                env.filters["tojson"] = tojson
+                env.globals["raise_exception"] = raise_exception
+                self._jinja_template = env.from_string(self.source)
+            return self._jinja_template
+
+    @property
+    def template(self):
+        """The jinja2 template object (compiled on first use when the native engine renders)."""
+        return self._jinja()
 
     def render(self, messages: list[dict], tools: list[dict] | None = None, add_generation_prompt: bool = True,
                **kwargs) -> str:
         # Do not use completed empty assistant turns as examples for the next reply. Keep the final message.
         # (#843.  STRATA_KEEP_EMPTY_TURNS=1 renders them as before.)
-        messages = [m for i, m in enumerate(messages)
-                    if i == len(messages) - 1 or os.environ.get("STRATA_KEEP_EMPTY_TURNS") == "1" or not (isinstance(m, dict) and m.get("role") == "assistant"
-                                                      and not _text_of(m.get("content")).strip()
-                                                      and not _has_image(m.get("content")) and not m.get("tool_calls"))]
-        return self.template.render(messages=messages, tools=tools, add_generation_prompt=add_generation_prompt,
+        if os.environ.get("STRATA_KEEP_EMPTY_TURNS") != "1":
+            last = len(messages) - 1
+            messages = [m for i, m in enumerate(messages)
+                        if i == last or not (isinstance(m, dict) and m.get("role") == "assistant"
+                                             and not _text_of(m.get("content")).strip()
+                                             and not _has_image(m.get("content")) and not m.get("tool_calls"))]
+        if self._native is not None:
+            try:
+                return self._native.render(messages, tools, add_generation_prompt, kwargs)
+            except _NativeFallback as e:
+                self._note_native_fallback(f"native render declined ({e})")
+            except TemplateRequestError:
+                raise
+            except (TypeError, ValueError) as e:
+                self._note_native_fallback(f"inputs not JSON ({e})")
+        return self._jinja().render(messages=messages, tools=tools, add_generation_prompt=add_generation_prompt,
                                     **kwargs)
 
     def _detect_caps(self) -> dict[str, bool]:

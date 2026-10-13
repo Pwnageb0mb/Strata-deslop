@@ -1,0 +1,120 @@
+# mtp_pack golden v1 - tools/mtp_pack.py's own output (gen_mtp_pack_golden.py)
+fixture mtp_pack_fixture
+geometry gate_up 3x4x128 down 3x8x64 norm1d 128 bf2d 4x8
+## q2_0
+file mtp-q2_0.gguf bytes 2208 sha256 d255b8678105a892e43d8bb9d87eabfe5258311f04d98a9788a66dd2fd37d0df
+stdout mtp.layers.0.input_layernorm.weight: BF16 0.0 MB
+stdout mtp.layers.0.mlp.experts.down_proj: q2_0 0.0 MB
+stdout mtp.layers.0.mlp.experts.gate_up_proj: q2_0 0.0 MB
+stdout mtp.layers.0.self_attn.q_norm.weight: F32 0.0 MB
+stdout wrote <out>: 0.000 GB of tensor data
+head_hex 474755460300000004000000000000000500000000000000140000000000000067656e6572616c2e617263686974656374757265080000000c000000000000007177656e346578702d6d747011000000000000007374726174612e6d74702e736f757263650800000036000000000000005177656e2f5177656e332e382d466c6173682d4e657874204246313620636865636b706f696e742c206d74702e2a20
+report_begin
+{
+ "total_bytes": 1440,
+ "tensors": [
+  {
+   "tensor": "mtp.layers.0.input_layernorm.weight",
+   "format": "BF16",
+   "bytes": 64
+  },
+  {
+   "tensor": "mtp.layers.0.mlp.experts.down_proj",
+   "format": "q2_0",
+   "bytes": 432,
+   "relative_rms_error_first_experts": 0.32675,
+   "seconds": 0.0
+  },
+  {
+   "tensor": "mtp.layers.0.mlp.experts.gate_up_proj",
+   "format": "q2_0",
+   "bytes": 432,
+   "relative_rms_error_first_experts": 0.29052,
+   "seconds": 0.0
+  },
+  {
+   "tensor": "mtp.layers.0.self_attn.q_norm.weight",
+   "format": "F32",
+   "bytes": 512
+  }
+ ]
+}
+report_end
+## q4_0
+file mtp-q4_0.gguf bytes 3008 sha256 b57825af0e45bd86708f60222124f55009c44d13c25472c37fda5fa6dac06ee3
+stdout mtp.layers.0.input_layernorm.weight: BF16 0.0 MB
+stdout mtp.layers.0.mlp.experts.down_proj: q4_0 0.0 MB
+stdout mtp.layers.0.mlp.experts.gate_up_proj: q4_0 0.0 MB
+stdout mtp.layers.0.self_attn.q_norm.weight: F32 0.0 MB
+stdout wrote <out>: 0.000 GB of tensor data
+head_hex 474755460300000004000000000000000500000000000000140000000000000067656e6572616c2e617263686974656374757265080000000c000000000000007177656e346578702d6d747011000000000000007374726174612e6d74702e736f757263650800000036000000000000005177656e2f5177656e332e382d466c6173682d4e657874204246313620636865636b706f696e742c206d74702e2a20
+report_begin
+{
+ "total_bytes": 2304,
+ "tensors": [
+  {
+   "tensor": "mtp.layers.0.input_layernorm.weight",
+   "format": "BF16",
+   "bytes": 64
+  },
+  {
+   "tensor": "mtp.layers.0.mlp.experts.down_proj",
+   "format": "q4_0",
+   "bytes": 864,
+   "relative_rms_error_first_experts": 0.06398,
+   "seconds": 0.0
+  },
+  {
+   "tensor": "mtp.layers.0.mlp.experts.gate_up_proj",
+   "format": "q4_0",
+   "bytes": 864,
+   "relative_rms_error_first_experts": 0.06848,
+   "seconds": 0.0
+  },
+  {
+   "tensor": "mtp.layers.0.self_attn.q_norm.weight",
+   "format": "F32",
+   "bytes": 512
+  }
+ ]
+}
+report_end
+## q8_0
+file mtp-q8_0.gguf bytes 4544 sha256 e5a4013bfc041d1da06ee47cef83bdb83a12dc9b2e5ffe743f7e38a7abfc73d7
+stdout mtp.layers.0.input_layernorm.weight: BF16 0.0 MB
+stdout mtp.layers.0.mlp.experts.down_proj: q8_0 0.0 MB
+stdout mtp.layers.0.mlp.experts.gate_up_proj: q8_0 0.0 MB
+stdout mtp.layers.0.self_attn.q_norm.weight: F32 0.0 MB
+stdout wrote <out>: 0.000 GB of tensor data
+head_hex 474755460300000004000000000000000500000000000000140000000000000067656e6572616c2e617263686974656374757265080000000c000000000000007177656e346578702d6d747011000000000000007374726174612e6d74702e736f757263650800000036000000000000005177656e2f5177656e332e382d466c6173682d4e657874204246313620636865636b706f696e742c206d74702e2a20
+report_begin
+{
+ "total_bytes": 3840,
+ "tensors": [
+  {
+   "tensor": "mtp.layers.0.input_layernorm.weight",
+   "format": "BF16",
+   "bytes": 64
+  },
+  {
+   "tensor": "mtp.layers.0.mlp.experts.down_proj",
+   "format": "q8_0",
+   "bytes": 1632,
+   "relative_rms_error_first_experts": 0.00371,
+   "seconds": 0.0
+  },
+  {
+   "tensor": "mtp.layers.0.mlp.experts.gate_up_proj",
+   "format": "q8_0",
+   "bytes": 1632,
+   "relative_rms_error_first_experts": 0.00433,
+   "seconds": 0.0
+  },
+  {
+   "tensor": "mtp.layers.0.self_attn.q_norm.weight",
+   "format": "F32",
+   "bytes": 512
+  }
+ ]
+}
+report_end

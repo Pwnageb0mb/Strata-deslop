@@ -5163,7 +5163,47 @@ int main(int argc, char** argv) {
         }
         const auto fill_t0 = std::chrono::steady_clock::now();
         uint64_t fill_bytes = 0;
-        for (int64_t i = 0; i < want; ++i) {
+        // Pipelined fill (STRATA_FILL_THREADS, default min(16, cores); 0 = the one-at-a-time blocking copies): admission
+        // below stays sequential and decides every slot; only the reads and the copies run in parallel.  The unbuffered
+        // file tier keeps its batched prefetch loop.
+        const bool unbuffered_fill = !per_layer && srcp == &src && src.unbuffered();
+        if (!unbuffered_fill) {
+            std::vector<strata::core::ExpertCache::FillJob> jobs;
+            jobs.reserve((size_t) want);
+            for (int64_t i = 0; i < want; ++i) {
+                const int32_t slot = xcache.admit(profile[(size_t) i].first, profile[(size_t) i].second);
+                if (slot == strata::core::kNotResident) {
+                    if (per_layer) continue;
+                    break;
+                }
+                strata::core::ExpertCache::FillJob job;
+                job.slot = slot;
+                job.bytes = (int64_t) strata::kernels::cpu::expert_layout().blob_bytes(profile[(size_t) i].first);
+                job.tag = i;
+                // a source that is not the file tier hands out stable pointers: taken here, on this thread
+                if (srcp != &src) job.host = srcp->blob_stable(profile[(size_t) i].first, profile[(size_t) i].second);
+                jobs.push_back(job);
+            }
+            const int fill_threads = strata::core::ExpertCache::fill_threads_default();
+            int64_t failed_at = -1;
+            const bool filled_ok = xcache.fill_slots_pipelined(jobs, [&](const strata::core::ExpertCache::FillJob& j) -> const uint8_t* {
+                if (srcp != &src) return nullptr;
+                const int64_t i = j.tag;
+                if (fill_ahead > 0 && i + fill_ahead < want) (void) src.advise_pairs(profile.data() + i + fill_ahead, 1);
+                return srcp->blob_stable(profile[(size_t) i].first, profile[(size_t) i].second);
+            }, fill_threads, err, failed_at);
+            if (!filled_ok) {
+                std::fprintf(stderr, "strata generate: the profile fill failed at pair %lld: %s\n",
+                             (long long) failed_at, err.c_str());
+                return 1;
+            }
+            for (const auto& j : jobs) fill_bytes += (uint64_t) j.bytes;
+            prefilled = (int64_t) jobs.size();
+            std::fprintf(stderr, "strata generate: profile fill: %zu slots, %.2f GiB, %d reader thread%s%s\n", jobs.size(),
+                         (double) fill_bytes / 1073741824.0, fill_threads, fill_threads == 1 ? "" : "s",
+                         fill_threads == 0 ? " (STRATA_FILL_THREADS=0: one blocking copy at a time)" : "");
+        }
+        for (int64_t i = 0; unbuffered_fill && i < want; ++i) {
             if (!per_layer && srcp == &src && src.unbuffered() && i % 64 == 0) {
                 if (ahead.valid()) ahead.get();
                 else read_batch(i);
@@ -5278,17 +5318,39 @@ int main(int argc, char** argv) {
             return 1;
         }
         int64_t filled = 0;
-        for (const auto& pr : st.profile) {
-            if (filled >= st.cache.slots()) break;
-            const int32_t slot = st.cache.admit(pr.first, pr.second);
-            if (slot == strata::core::kNotResident) break;
-            const uint8_t* b = srcp->blob_stable(pr.first, pr.second);
-            if (b == nullptr || !st.cache.fill_slot_blocking(slot, b, err, (int64_t) lay.blob_bytes(pr.first))) {
+        const auto stage_fill_t0 = std::chrono::steady_clock::now();
+        {
+            // admission sequential (it decides the slots), the reads and copies pipelined (see the first stage's fill)
+            std::vector<strata::core::ExpertCache::FillJob> jobs;
+            for (const auto& pr : st.profile) {
+                if ((int64_t) jobs.size() >= st.cache.slots()) break;
+                const int32_t slot = st.cache.admit(pr.first, pr.second);
+                if (slot == strata::core::kNotResident) break;
+                strata::core::ExpertCache::FillJob job;
+                job.slot = slot;
+                job.bytes = (int64_t) lay.blob_bytes(pr.first);
+                job.tag = (int64_t) jobs.size();
+                if (srcp != &src) job.host = srcp->blob_stable(pr.first, pr.second);
+                jobs.push_back(job);
+            }
+            int64_t failed_at = -1;
+            if (!st.cache.fill_slots_pipelined(jobs, [&](const strata::core::ExpertCache::FillJob& j) -> const uint8_t* {
+                    if (srcp != &src) return nullptr;
+                    const auto& pr = st.profile[(size_t) j.tag];   // admitted in profile order with no skips: tag == index
+                    return srcp->blob_stable(pr.first, pr.second);
+                }, strata::core::ExpertCache::fill_threads_default(), err, failed_at)) {
                 std::fprintf(stderr, "strata generate: layer split, CUDA%d profile fill failed at pair %lld: %s\n",
-                             st.dev, (long long) filled, err.c_str());
+                             st.dev, (long long) failed_at, err.c_str());
                 return 1;
             }
-            ++filled;
+            filled = (int64_t) jobs.size();
+        }
+        {
+            const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - stage_fill_t0).count();
+            double gb = 0;
+            for (int64_t k = 0; k < filled; ++k) gb += (double) lay.blob_bytes(st.profile[(size_t) k].first);
+            std::fprintf(stderr, "strata generate: layer split, CUDA%d profile fill: %lld slots, %.2f GiB in %.1f s (%.0f MB/s)\n",
+                         st.dev, (long long) filled, gb / 1073741824.0, s, s > 0 ? gb / 1e6 / s : 0.0);
         }
         if (filled == 0 || !st.cache.verify_slot(st.cache.slot_of(st.profile[0].first, st.profile[0].second),
                                                  srcp->blob_stable(st.profile[0].first, st.profile[0].second), err,

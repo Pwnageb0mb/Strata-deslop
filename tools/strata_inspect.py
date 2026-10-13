@@ -1,17 +1,12 @@
 """Which Strata model a GGUF is - and whether Strata can run it - from its header alone.
 
-Reads only the files' headers (a few MB each, by HTTP range requests for a remote file) with quantscope, prints the
-real storage of every weight group (bits per weight, quantization types), then compares the routed experts and the
-sizes with the files setup installs (data/gguf_fingerprints.json):
+Reads only the local files' headers (a few MB each) with quantscope, prints the real storage of every weight group
+(bits per weight, quantization types), then compares the routed experts and the sizes with the files setup installs
+(data/gguf_fingerprints.json). Only local files are read; no network is used.
 
-    python tools/strata_inspect.py ms:ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF          # list the variants
-    python tools/strata_inspect.py ms:ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF IQ3_S    # one variant
-    python tools/strata_inspect.py ms:unsloth/Qwen3.8-Flash-Next-GGUF UD-Q2_K_XL
-    python tools/strata_inspect.py D:/models/my-copy-00001-of-00002.gguf                  # a local file or folder
-    python tools/strata_inspect.py https://example.com/x-00001-of-00002.gguf              # one URL (that shard only)
-
-ms: is ModelScope, hf: Hugging Face (HF_ENDPOINT is honoured).  setup.py --inspect runs the same.
-    python tools/strata_inspect.py --fingerprints data/gguf_fingerprints.json             # remake the table
+    python tools/strata_inspect.py D:/models/my-copy                                      # list the variants
+    python tools/strata_inspect.py D:/models/my-copy IQ3_S                                # one variant
+    python tools/strata_inspect.py D:/models/my-copy/my-copy-00001-of-00002.gguf          # a local file or folder
 """
 from __future__ import annotations
 
@@ -29,20 +24,6 @@ import quantscope as qs  # noqa: E402
 
 FINGERPRINTS = ROOT / "data" / "gguf_fingerprints.json"
 ARCH = "qwen4exp"                                       # Qwen3.8-Flash-Next's general.architecture
-
-# the files setup installs: (family, model, ModelScope repository, file name prefix) - for --fingerprints
-KNOWN = [
-    ("qwen", "Q2_0", "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "Q2_0/"),
-    ("qwen", "IQ2_XS", "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "IQ2_XS/"),
-    ("qwen", "IQ3_XXS", "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "IQ3_XXS/"),
-    ("qwen", "IQ3_S", "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "IQ3_S/"),
-    ("swift", "Q2_0", "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "Swift-Qwen3.8-Flash-Next-GSQ-RCO-Q2_0"),
-    ("swift", "IQ2_XS", "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS"),
-    ("swift", "IQ3_XXS", "ukisai/Swift-1.5-Qwen3.8-Flash-Next-GSQ-RCO-GGUF", "Swift-Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS"),
-    ("coder", "IQ1_M", "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-Coder-GGUF", "IQ1_M/"),
-    ("unsloth", "UD-IQ4_XS", "unsloth/Qwen3.8-Flash-Next-GGUF", "UD-IQ4_XS/"),
-    ("unsloth", "UD-Q4_K_XL", "unsloth/Qwen3.8-Flash-Next-GGUF", "UD-Q4_K_XL/"),
-]
 
 
 def read_headers(files: list) -> tuple[str | None, list[dict]]:
@@ -120,35 +101,18 @@ def verdict(fp: dict, table: dict) -> tuple[str, str]:
     return "untested", head + "; every tensor uses a quantization some file Strata runs has for it"
 
 
-def make_fingerprints(out: Path) -> None:
-    listing, table = {}, {}
-    for fam, model, repo, prefix in KNOWN:
-        if repo not in listing:
-            listing[repo] = qs.list_hub("ms", repo)
-        files = sorted((f for f in listing[repo] if f.name.startswith(prefix) and f.name.endswith(".gguf")),
-                       key=lambda f: f.name)
-        table[f"{fam}/{model}"] = {**fingerprint(*read_headers(files)), "files": [f.name for f in files], "repo": repo}
-        print(f"{fam}/{model}: experts {table[f'{fam}/{model}']['experts_bpw']} bits/weight", file=sys.stderr)
-    union: dict[str, set] = defaultdict(set)
-    for v in table.values():
-        for r, ts in v.pop("roles").items():
-            union[r] |= set(ts)
-    table["_roles"] = {r: sorted(ts) for r, ts in sorted(union.items())}   # every quantization each tensor has
-    out.write_text(json.dumps(table, indent=1) + "\n", encoding="utf-8")
-
-
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("source", nargs="?", help="ms:owner/repo, hf:owner/repo, a URL, a .gguf file or a folder")
+    ap.add_argument("source", help="a local .gguf file or a folder (only local files are read)")
     ap.add_argument("variant", nargs="?", help="a variant name or glob (e.g. IQ3_S, UD-Q2_K_XL)")
-    ap.add_argument("--fingerprints", metavar="OUT", help="read the files setup installs and write the table")
     a = ap.parse_args()
-    if a.fingerprints:
-        make_fingerprints(Path(a.fingerprints))
-        return
-    if not a.source:
-        ap.error("a source is needed")
-    files = [f for f in qs.resolve(a.source) if f.name.endswith(".gguf") and "mmproj" not in f.name.lower()]
+    if a.source.lower().startswith(("http://", "https://", "ms:", "hf:")):
+        ap.error("only local files are read: give a local .gguf file or folder (download the file first)")
+    try:
+        everything = qs.resolve(a.source)
+    except ValueError as error:
+        sys.exit(str(error))
+    files = [f for f in everything if f.name.endswith(".gguf") and "mmproj" not in f.name.lower()]
     variants: dict[str, list] = defaultdict(list)
     for f in files:
         variants[qs.variant_of(f.name)].append(f)

@@ -1,0 +1,2 @@
+# strata native experts v3: layer gu_type d_type offset blob_bytes gate_off up_off down_off [shard] (n_expert 32, total 3264; absolute offsets in model.gguf, or in the named shard beside it)
+0 8 8 0 102 7424 8512 9600

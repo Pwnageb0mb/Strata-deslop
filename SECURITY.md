@@ -36,6 +36,8 @@ this PC only. The details and every setting are in [docs/DETAILS.md](docs/DETAIL
   MCP tools are accepted only as JSON from Strata's own page (or `"trusted_origins"`), so a page elsewhere cannot
   change settings or run tools.
 - **CORS** is off unless `"cors_origins"` lists origins, and then only for `/v1/*`.
+- **Images** are accepted only as `data:` URLs. The server fetches no image URL and reads no local file as an
+  image; any other image source is a 400.
 - **MCP tools** are opt-in: only the servers you put in the run config, only for requests from Strata's own page
   that ask for them. They run with your user's rights, and the model decides when to call them.
 - **The request monitor** (`/api-monitor`, which keeps the last prompts and answers in memory) is off unless

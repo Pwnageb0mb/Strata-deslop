@@ -1,0 +1,19 @@
+# draft-vocab golden: tools/draft_vocab.py over a synthetic byte-level BPE vocabulary
+gguf draft-vocab.gguf
+base draft-base.bin
+corpus corpus.txt
+vocab 271
+base_ids 40
+cfg add-cjk args --add cjk
+stdout add-cjk wrote <out>: 50 ids (10 added)
+subset add-cjk bytes 200 sha256 1c6c9e448529d027ae5aae5aec1ddd544310f661ca3079d286fc7c239b4dc7c3 ids 50
+cfg add-cyrillic args --add cyrillic
+stdout add-cyrillic wrote <out>: 42 ids (2 added)
+subset add-cyrillic bytes 168 sha256 2446201db26cc2bc922e94e676eae9703c69b29b44f0a9fe7b58331cd4105f8a ids 42
+cfg corpus args --corpus corpus.txt --coverage 0.9
+stdout corpus corpus: 61 token occurrences, 25 distinct; 19 tokens cover 0.9, 18 of them not in the base
+stdout corpus corpus occurrences outside the base: 88.52%, outside the new subset: 9.84%
+stdout corpus wrote <out>: 58 ids (18 added)
+subset corpus bytes 232 sha256 848008877983a71c07d7b50ad57028a1fd79f4a265e1c78998b4a0c6b85466ce ids 58
+cfg stats-only args --stats
+stdout stats-only base: 40 ids; han 0/4, kana 0/2, hangul 0/2, cjk_punct 0/2, cyrillic 0/2

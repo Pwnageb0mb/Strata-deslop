@@ -712,7 +712,7 @@ public:
 
     /// Blobs touched, for the driver to report.  With `h = 0` this is `48 * k` per token and the number is only
     /// interesting once Phase 3 makes it not so.
-    int64_t reads() const override { return reads_; }
+    int64_t reads() const override { return reads_.load(std::memory_order_relaxed); }
 
     // ---- the Linux I/O path of the mapped file tier (STRATA_IO_PREFETCH=1, opt in; no effect on Windows)
     //
@@ -854,6 +854,8 @@ private:
     uint64_t mapped_bytes_ = 0;
     std::vector<uint64_t> layer_offsets_, layer_blob_bytes_;
     void* complement_arena_ = nullptr;
+    bool complement_mmapped_ = false;         ///< the arena is an anonymous mmap + cudaHostRegister (freed by unregister + munmap)
+    uint64_t complement_map_bytes_ = 0;
     const uint8_t* complement_host_ = nullptr;
     const uint8_t* complement_device_ = nullptr;
     uint64_t complement_bytes_ = 0;
@@ -879,7 +881,7 @@ private:
     uint64_t xstage_blob_ = 0;
     int64_t exchanges_ = 0;
     std::atomic<int64_t> file_reads_{0};
-    int64_t reads_ = 0;
+    std::atomic<int64_t> reads_{0};
 #if defined(_WIN32)
     void* file_ = nullptr;
     void* mapping_ = nullptr;
@@ -954,7 +956,7 @@ private:
     const uint8_t* base_ = nullptr;
     int64_t blobs_ = 0;
     int64_t n_expert_ = 0;
-    int64_t reads_ = 0;
+    std::atomic<int64_t> reads_{0};
     std::string note_;
     std::string ram_warning_;
     double gib_per_s_ = 0.0;

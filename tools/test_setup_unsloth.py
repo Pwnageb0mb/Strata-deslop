@@ -34,8 +34,6 @@ class Pins(unittest.TestCase):
         self.assertEqual(sum(b for b, _ in setup.UNSLOTH_SHARDS.values()), 111334654784)
         for _, sha in setup.UNSLOTH_SHARDS.values():
             self.assertRegex(sha, r"^[0-9a-f]{64}$")
-        self.assertEqual(fam["hf"].format(q=M),
-                         f"https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/{REV}/UD-Q4_K_XL/")
         self.assertEqual(setup.MODELS[M]["families"], ("unsloth",))   # no other family lists it
         self.assertTrue(setup.MODELS[M]["experimental"])               # 0.1.39: per model, not the family
         self.assertFalse(fam.get("experimental"))
@@ -141,7 +139,7 @@ class Base(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def main(self, argv, ram=63.7, version="0.1.32", n_gpus=1, model=True, amd=(), free=500.0, m=M, answers=None,
+    def main(self, argv, ram=63.7, version="0.1.32", n_gpus=1, model=True, free=500.0, m=M, answers=None,
              family=True):
         """answers: None = --yes; else {words of a question: its answer} (Enter for the others), and every question
         asked is kept in self.asked.  family=False: no --family (the first menu is shown)."""
@@ -174,17 +172,15 @@ class Base(unittest.TestCase):
             mock.patch.object(setup, "data_folder", lambda d: (self.t / "data", [])),
             mock.patch.object(setup, "installed_configs", lambda: []),
             mock.patch.object(setup, "gpus", lambda: found),
-            mock.patch.object(setup, "amd_gpus", lambda *a: list(amd)),
             mock.patch.object(setup, "ram_gb", lambda: ram),
             mock.patch.object(setup, "cpu_info", lambda: ("Test CPU", True, True)),
             mock.patch.object(setup, "cpu_cores", lambda: None),   # #642: not a hybrid CPU
-            mock.patch.object(setup, "page_file_gb", lambda: 16.0),
             mock.patch.object(setup, "free_gb", lambda p: free),
             mock.patch.object(setup, "rotational_disk", lambda p: None),   # #605: not the test PC's disk
             mock.patch.object(setup, "is_wsl", lambda: False),            # #974: the tests are not run inside WSL
             mock.patch.object(setup, "pip_install", lambda *a, **k: None),
             mock.patch.object(setup, "get_llama_cpp", lambda: self.t / "llama.cpp"),
-            mock.patch.object(setup, "get_prebuilt", lambda *a, **k: eng),
+            mock.patch.object(setup, "build_engine", lambda *a, **k: eng),
             mock.patch.object(setup, "download", fake_download),
             mock.patch.object(setup, "check_shards", lambda shards: None),
             mock.patch.object(setup, "verify_sha256", lambda s, size, sha: self.verified.append((s.name, size, sha))),
@@ -214,8 +210,7 @@ class Main(Base):
         code, out, cfg = self.main(["--context", "8192"])
         self.assertEqual(code, 0, out)
         self.assertIn("EXPERIMENTAL", out)
-        base = f"https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/{REV}/UD-Q4_K_XL/"
-        self.assertEqual(self.downloads, [base + n for n in setup.UNSLOTH_SHARDS])   # no image encoder
+        self.assertEqual([Path(u).name for u in self.downloads], list(setup.UNSLOTH_SHARDS))   # no image encoder
         self.assertEqual([v[0] for v in self.verified], list(setup.UNSLOTH_SHARDS))
         self.assertEqual([v[1:] for v in self.verified], list(setup.UNSLOTH_SHARDS.values()))
         packs = [r for r in self.runs if r[1].endswith("iq_pack.py")]
@@ -263,19 +258,6 @@ class Main(Base):
         self.assertEqual(code, 1)
         self.assertIn("needs 48 GB of RAM or more", out)
         self.assertIn("--model UD-IQ4_XS --yes", out)       # the way to insist (0.1.39: the family's default size)
-        self.assertEqual(self.downloads, [])
-
-    def test_amd_is_asked_before_the_download(self):
-        """#429: UD-Q4_K_XL has not run on AMD (CUDA-only prompt kernels): --yes alone stops before the 111 GB
-        download, saying why; it is not refused outright (the owner's rule: --model with --yes goes on)."""
-        r9700 = [{"index": 0, "name": "AMD Radeon AI PRO R9700", "vram_gb": 31.9, "arch": "gfx1201",
-                  "driver": "amdgpu"}]
-        # chosen in the menu (2 = UD-Q4_K_XL, after the regular UD-IQ4_XS), not by --model: the answer is no
-        code, out, cfg = self.main(["--context", "8192", "--backend", "hip", "--vision", "no"], model=False,
-                                   amd=r9700, answers={"Which size": "2", "Try it anyway": "n"})
-        self.assertEqual(code, 1, out)
-        self.assertIn("has not been run on AMD cards yet", out)
-        self.assertIn("--model UD-Q4_K_XL --yes", out)
         self.assertEqual(self.downloads, [])
 
     def test_resumed_download_needs_room_for_the_rest_only(self):
@@ -462,8 +444,7 @@ class IQ4XS(Base):
         code, out, cfg = self.main(["--context", "8192"], version="0.1.38", m=X)
         self.assertEqual(code, 0, out)
         self.assertNotIn("is EXPERIMENTAL", out)                               # (the menu still lists UD-Q4_K_XL)
-        base = f"https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/{REV}/UD-IQ4_XS/"
-        self.assertEqual(self.downloads, [base + n for n in setup.UNSLOTH_IQ4_XS_SHARDS])
+        self.assertEqual([Path(u).name for u in self.downloads], list(setup.UNSLOTH_IQ4_XS_SHARDS))
         self.assertEqual(self.verified, [(n, *v) for n, v in setup.UNSLOTH_IQ4_XS_SHARDS.items()])
         packs = [r for r in self.runs if r[1].endswith("iq_pack.py")]
         self.assertEqual(len(packs), 1, self.runs)
@@ -518,8 +499,7 @@ class IQ4XS(Base):
         self.assertEqual(code, 0, out)
         self.assertNotIn("images are not available", out)
         self.assertIn("images: on", out)
-        self.assertEqual(self.downloads[-1], setup.hf("ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF")
-                         + "mmproj-Qwen3.8-Flash-Next-BF16.gguf")
+        self.assertEqual(Path(self.downloads[-1]).name, "mmproj-Qwen3.8-Flash-Next-BF16.gguf")
         self.assertIn("--vision", cfg["args"])
         self.assertTrue(cfg["vision"]["model"].endswith("UD-IQ4_XS-00001-of-00003.gguf"))
         self.assertIn("--resident-budget-gib", cfg["args"])
@@ -546,58 +526,6 @@ class IQ4XS(Base):
         self.assertEqual(code, 1)
         self.assertIn("needs engine 0.1.38 or newer; this one is 0.1.37", out)
         self.assertEqual(self.downloads, [])
-
-    def test_amd_is_not_asked(self):
-        r9700 = [{"index": 0, "name": "AMD Radeon AI PRO R9700", "vram_gb": 31.9, "arch": "gfx1201",
-                  "driver": "amdgpu"}]
-        with mock.patch.object(setup, "get_prebuilt_hip", lambda *a, **k: self.t / "engine"), \
-                mock.patch.object(setup, "build_engine_hip", lambda *a, **k: self.t / "engine"):  # Linux compiles it
-            code, out, cfg = self.main(["--context", "8192", "--backend", "hip"], version="0.1.38", amd=r9700, m=X)
-        self.assertNotIn("has not been run on AMD cards yet", out)
-        self.assertIn("RAM budget: 40 GiB of UD-IQ4_XS's experts", out)
-
-
-class StrixHaloCache(Base):
-    """#1715: on a unified-memory APU the expert cache and the RAM budget are the same RAM: setup writes a cache size
-    that leaves the OS room, not `--expert-cache auto` (it OOM-killed a 128 GB Strix Halo with the desktop open)."""
-
-    HALO = [{"index": 0, "name": "AMD Radeon 8060S", "vram_gb": 2.0, "arch": "gfx1151", "driver": "amdgpu",
-             "uma": True, "dedicated_gb": 2.0, "shared_gb": 112.0}]
-
-    def run_halo(self, ram, argv=("--context", "8192"), amd=None):
-        with mock.patch.object(setup, "get_prebuilt_hip", lambda *a, **k: self.t / "engine"),                 mock.patch.object(setup, "WIN", False),                 mock.patch.object(setup, "build_engine_hip", lambda *a, **k: self.t / "engine"):
-            return self.main([*argv, "--backend", "hip"], version="0.1.41", amd=self.HALO if amd is None else amd,
-                             ram=ram, m="UD-IQ4_XS")
-
-    def test_cache_is_a_number_that_leaves_room(self):
-        code, out, cfg = self.run_halo(124.0)
-        self.assertEqual(code, 0, out)
-        args = cfg["args"]
-        self.assertEqual(args[args.index("--resident-budget-gib") + 1], "55")
-        slots = int(args[args.index("--expert-cache") + 1])
-        # 124 - 24 (left) - 55 (budget) = 45 GiB of 1.1 x the average expert (59.5 GB / 24576)
-        self.assertEqual(slots, int(45 / (59.5e9 / setup.UMA_EXPERTS * 1.1 / 2**30)))
-        self.assertTrue(0 < slots < setup.UMA_EXPERTS)
-        self.assertIn("expert cache: %d slots (not auto)" % slots, out)
-
-    def test_never_more_than_all_the_experts(self):
-        self.assertEqual(setup.uma_expert_cache("UD-IQ4_XS", 512.0, 55), setup.UMA_EXPERTS)
-
-    def test_no_room_keeps_auto_and_says_so(self):
-        self.assertIsNone(setup.uma_expert_cache("UD-IQ4_XS", 64.0, 40))
-        code, out, cfg = self.run_halo(64.0, ("--context", "8192", "--resident-budget-gib", "40"))
-        self.assertEqual(code, 0, out)
-        args = cfg["args"]
-        self.assertEqual(args[args.index("--expert-cache") + 1], "auto")
-        self.assertIn("leaves almost none for the expert cache", out)
-
-    def test_a_discrete_card_keeps_auto(self):
-        r9700 = [{"index": 0, "name": "AMD Radeon AI PRO R9700", "vram_gb": 31.9, "arch": "gfx1201",
-                  "driver": "amdgpu"}]
-        code, out, cfg = self.run_halo(124.0, amd=r9700)
-        self.assertEqual(code, 0, out)
-        self.assertEqual(cfg["args"][cfg["args"].index("--expert-cache") + 1], "auto")
-
 
 class LayerSplit(unittest.TestCase):
     """#498: UD-Q4_K_XL across GPUs - asked at setup (one GPU by default), and a start with --gpus no longer keeps

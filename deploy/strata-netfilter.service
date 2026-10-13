@@ -1,0 +1,27 @@
+# deploy/strata-netfilter.service - apply the strata egress allowlist at boot.
+#
+# iptables rules do not survive a reboot on this host (no netfilter-persistent), so a firewall guarantee that
+# lives only in the running kernel is not a guarantee - it lasts until the next reboot, and then the container
+# has the internet again and nobody notices.
+#
+# Install:
+#   sudo install -Dm755 deploy/strata-netfilter.sh /usr/local/lib/strata/strata-netfilter.sh
+#   sudo install -Dm644 deploy/strata-netfilter.service /etc/systemd/system/strata-netfilter.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now strata-netfilter.service
+#
+# After docker.service: the bridge interface does not exist until Docker has created the network, and the script
+# derives the interface from the network rather than hardcoding it.
+[Unit]
+Description=Strata container egress allowlist (192.168.0.0/16 only)
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/local/lib/strata/strata-netfilter.sh
+
+[Install]
+WantedBy=multi-user.target

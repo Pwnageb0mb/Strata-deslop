@@ -98,6 +98,7 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt AND EXISTS ${CMAKE_CU
 endif()
 option(STRATA_BUILD_TESTS "Build the test suite" ${_strata_tests_default})
 option(STRATA_BUILD_CONVERSATION_TESTS "Build standalone conversation cache tests" OFF)
+include(cmake/strata_text.cmake)   # libstrata_text: the server's tokenizer (CPU only, C ABI)
 option(STRATA_WERROR "Treat compiler warnings as errors" OFF)
 
 if(STRATA_BUILD_CONVERSATION_TESTS)
@@ -254,6 +255,179 @@ if(STRATA_BUILD_TESTS)
   add_executable(batch_read_test tests/program/batch_read_test.cpp)
   target_include_directories(batch_read_test PRIVATE include)
   add_test(NAME batch_read_test COMMAND batch_read_test)
+  # the qwen35 pre-tokenizer against the reference implementation's own output, piece for piece
+  # (tools/gen_pretok_golden.py writes the golden; tools/gen_unicode_classes.py writes its Unicode tables)
+  add_executable(pretokenizer_test tests/tokenizer/pretokenizer_test.cpp src/tokenizer/pretokenizer.cpp
+                 src/tokenizer/utf8.cpp)
+  target_include_directories(pretokenizer_test PRIVATE include)
+  add_test(NAME pretokenizer_test COMMAND pretokenizer_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/tokenizer/pretok_golden.txt)
+  set_tests_properties(pretokenizer_test PROPERTIES TIMEOUT 60)
+  # byte-level BPE, the special literals and decode, against the reference's own ids (tools/gen_tokenizer_golden.py)
+  add_executable(tokenizer_test tests/tokenizer/tokenizer_test.cpp src/tokenizer/tokenizer.cpp
+                 src/tokenizer/pretokenizer.cpp src/tokenizer/utf8.cpp)
+  target_include_directories(tokenizer_test PRIVATE include)
+  add_test(NAME tokenizer_test COMMAND tokenizer_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/tokenizer/tokenizer_golden.txt)
+  set_tests_properties(tokenizer_test PROPERTIES TIMEOUT 60)
+  # the pack's index.txt and dense.bin against the reference packer's own output for a synthetic model
+  # (tools/gen_pack_golden.py writes both the model and the reference's pack of it)
+  add_executable(pack_test tests/artifact/pack_test.cpp src/artifact/pack_writer.cpp)
+  target_include_directories(pack_test PRIVATE include)
+  add_test(NAME pack_test COMMAND pack_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/artifact/pack_golden)
+  set_tests_properties(pack_test PROPERTIES TIMEOUT 60)
+  # SHA-256 against the FIPS 180-4 vectors, because conversions.json's source_sha256 must equal hashlib's
+  add_executable(sha256_test tests/artifact/sha256_test.cpp)
+  target_include_directories(sha256_test PRIVATE include)
+  add_test(NAME sha256_test COMMAND sha256_test)
+  set_tests_properties(sha256_test PROPERTIES TIMEOUT 60)
+  # the canonical pack's code packing and scale precision against tools/strata_pack.py's own answers
+  # (tools/gen_strata_pack_golden.py writes the golden; strata_pack.py is the tool the tree names as `strata-pack`)
+  add_executable(canonical_codes_test tests/artifact/canonical_codes_test.cpp)
+  target_include_directories(canonical_codes_test PRIVATE include)
+  add_test(NAME canonical_codes_test COMMAND canonical_codes_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/artifact/strata_pack_golden.txt)
+  set_tests_properties(canonical_codes_test PROPERTIES TIMEOUT 60)
+  # the source-type mappings into the canonical planes (encode) and their decode, against canonical_xcheck's own
+  # answers (tools/gen_canonical_mapping_golden.py writes the golden)
+  add_executable(canonical_mapping_test tests/artifact/canonical_mapping_test.cpp)
+  target_include_directories(canonical_mapping_test PRIVATE include)
+  add_test(NAME canonical_mapping_test COMMAND canonical_mapping_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/artifact/canonical_mapping_golden.txt)
+  set_tests_properties(canonical_mapping_test PROPERTIES TIMEOUT 60)
+  # the per-tensor plane layout and the manifest-driven decode, against tools/strata_pack.py's own
+  # (tools/gen_canonical_entry_golden.py writes the golden)
+  add_executable(canonical_entry_test tests/artifact/canonical_entry_test.cpp)
+  target_include_directories(canonical_entry_test PRIVATE include)
+  add_test(NAME canonical_entry_test COMMAND canonical_entry_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/artifact/canonical_entry_golden.txt)
+  set_tests_properties(canonical_entry_test PROPERTIES TIMEOUT 60)
+  # the engine's index.txt, flattened from the manifest entries (tools/gen_pack_index_golden.py writes the golden)
+  add_executable(pack_index_test tests/artifact/pack_index_test.cpp src/artifact/pack_index.cpp)
+  target_include_directories(pack_index_test PRIVATE include)
+  add_test(NAME pack_index_test COMMAND pack_index_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/artifact/pack_index_golden.txt)
+  set_tests_properties(pack_index_test PROPERTIES TIMEOUT 60)
+  # the expert arena's blob layout and its inverse, against tools/pack_layer.py's own experts.bin
+  # (tools/gen_expert_arena_golden.py writes the golden, running the reference over a fixture-sized model)
+  add_executable(expert_arena_test tests/artifact/expert_arena_test.cpp)
+  target_include_directories(expert_arena_test PRIVATE include)
+  add_test(NAME expert_arena_test COMMAND expert_arena_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/artifact/expert_arena_golden.txt)
+  set_tests_properties(expert_arena_test PROPERTIES TIMEOUT 60)
+  # the pack's manifest.json, against tools/strata_pack.py's own build (tools/gen_pack_build_golden.py)
+  add_executable(pack_manifest_test tests/artifact/pack_manifest_test.cpp src/artifact/pack_manifest.cpp
+                 src/artifact/pack_index.cpp)
+  target_include_directories(pack_manifest_test PRIVATE include)
+  add_test(NAME pack_manifest_test COMMAND pack_manifest_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/artifact/pack_build_golden.txt)
+  set_tests_properties(pack_manifest_test PROPERTIES TIMEOUT 60)
+  # a whole pack, built from the fixture model and compared file for file (tools/gen_pack_build_golden.py)
+  add_executable(pack_build_test tests/artifact/pack_build_test.cpp src/artifact/pack_build.cpp
+                 src/artifact/pack_manifest.cpp src/artifact/pack_index.cpp src/artifact/pack_writer.cpp
+                 src/artifact/dequant.cpp)
+  target_include_directories(pack_build_test PRIVATE include)
+  add_test(NAME pack_build_test COMMAND pack_build_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/artifact/pack_build_golden.txt)
+  set_tests_properties(pack_build_test PROPERTIES TIMEOUT 120)
+
+  # the routing trace and the profile ranking, against tools/make_profile.py's own output
+  # (tools/gen_eviction_golden.py writes the golden and the fixtures)
+  add_executable(expert_profile_test tests/core/expert_profile_test.cpp)
+  target_link_libraries(expert_profile_test PRIVATE strata_profile)
+  add_test(NAME expert_profile_test COMMAND expert_profile_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/eviction/trace_golden.txt)
+  set_tests_properties(expert_profile_test PROPERTIES TIMEOUT 60)
+
+  # the eviction policies, against tools/bench_eviction.py's own report and CSV
+  add_executable(eviction_sim_test tests/core/eviction_sim_test.cpp)
+  target_link_libraries(eviction_sim_test PRIVATE strata_profile)
+  add_test(NAME eviction_sim_test COMMAND eviction_sim_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/eviction/trace_golden.txt)
+  set_tests_properties(eviction_sim_test PROPERTIES TIMEOUT 60)
+
+  # the engine's adaptive policy, replayed, against tools/replay_cache_policy.py's own stdout
+  add_executable(cache_replay_test tests/core/cache_replay_test.cpp)
+  target_link_libraries(cache_replay_test PRIVATE strata_profile)
+  add_test(NAME cache_replay_test COMMAND cache_replay_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/eviction/cache_replay_golden.txt)
+  set_tests_properties(cache_replay_test PROPERTIES TIMEOUT 60)
+
+  # the draft-vocabulary builder, against tools/draft_vocab.py's own output and subsets.  It drives the built
+  # binary: the printed report is the acceptance, so the test must exercise the real tool.
+  add_executable(strata-draft-vocab src/tokenizer/draft_vocab_main.cpp src/tokenizer/gguf_vocab.cpp
+                 src/tokenizer/tokenizer.cpp src/tokenizer/pretokenizer.cpp src/tokenizer/utf8.cpp)
+  target_include_directories(strata-draft-vocab PRIVATE include)
+  add_executable(draft_vocab_test tests/tokenizer/draft_vocab_test.cpp)
+  target_include_directories(draft_vocab_test PRIVATE include)
+  add_test(NAME draft_vocab_test COMMAND draft_vocab_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/tokenizer/draft_vocab_golden.txt
+           $<TARGET_FILE:strata-draft-vocab>)
+  set_tests_properties(draft_vocab_test PROPERTIES TIMEOUT 60)
+
+  # the expert blob at PRODUCTION geometry, against tools/mtp_rt.py's own blob_of (tools/gen_mtp_rt_blob_golden.py)
+  add_executable(mtp_rt_blob_test tests/artifact/mtp_rt_blob_test.cpp)
+  target_include_directories(mtp_rt_blob_test PRIVATE include)
+  add_test(NAME mtp_rt_blob_test COMMAND mtp_rt_blob_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/artifact/mtp_rt_blob_golden.txt)
+  set_tests_properties(mtp_rt_blob_test PROPERTIES TIMEOUT 60)
+
+  # the host f32 -> Q8_0 quantizer, against tools/mtp_rt.py's own q8_0 (tools/gen_mtp_rt_golden.py)
+  add_executable(q8_0_quant_test tests/artifact/q8_0_quant_test.cpp)
+  target_include_directories(q8_0_quant_test PRIVATE include)
+  add_test(NAME q8_0_quant_test COMMAND q8_0_quant_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/mtp/mtp_rt_golden.txt)
+  set_tests_properties(q8_0_quant_test PROPERTIES TIMEOUT 60)
+
+  # the safetensors -> GGUF model-preparation tools (tools/embd_bf16_pack.py, tools/ple_fp8_pack.py)
+  add_executable(strata-embd-bf16-pack src/artifact/embd_bf16_pack_main.cpp)
+  target_include_directories(strata-embd-bf16-pack PRIVATE include)
+  add_executable(embd_bf16_pack_test tests/artifact/embd_bf16_pack_test.cpp)
+  target_include_directories(embd_bf16_pack_test PRIVATE include)
+  add_test(NAME embd_bf16_pack_test COMMAND embd_bf16_pack_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/artifact/safetensors_pack_golden.txt
+           $<TARGET_FILE:strata-embd-bf16-pack>)
+  set_tests_properties(embd_bf16_pack_test PROPERTIES TIMEOUT 120)
+  add_executable(strata-ple-fp8-pack src/artifact/ple_fp8_pack_main.cpp)
+  target_include_directories(strata-ple-fp8-pack PRIVATE include)
+  add_executable(ple_fp8_pack_test tests/artifact/ple_fp8_pack_test.cpp)
+  target_include_directories(ple_fp8_pack_test PRIVATE include)
+  add_test(NAME ple_fp8_pack_test COMMAND ple_fp8_pack_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/artifact/safetensors_pack_golden.txt
+           $<TARGET_FILE:strata-ple-fp8-pack>)
+  set_tests_properties(ple_fp8_pack_test PROPERTIES TIMEOUT 120)
+
+  # the MTP draft layer's runtime files (tools/mtp_rt.py)
+  add_executable(strata-mtp-rt src/artifact/mtp_rt_main.cpp)
+  target_include_directories(strata-mtp-rt PRIVATE include)
+  add_executable(mtp_rt_test tests/artifact/mtp_rt_test.cpp)
+  target_include_directories(mtp_rt_test PRIVATE include)
+  add_test(NAME mtp_rt_test COMMAND mtp_rt_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/mtp/mtp_rt_golden.txt
+           $<TARGET_FILE:strata-mtp-rt>)
+  set_tests_properties(mtp_rt_test PROPERTIES TIMEOUT 120)
+
+  # the pack-layout arena TOOL (tools/pack_layer.py): the GGUF read, the per-layer loop and the manifest, against
+  # the reference's own build() over a committed fixture GGUF (tools/gen_pack_layer_golden.py)
+  add_executable(strata-pack-layer src/artifact/pack_layer_main.cpp)
+  target_include_directories(strata-pack-layer PRIVATE include)
+  add_executable(pack_layer_test tests/artifact/pack_layer_test.cpp)
+  target_include_directories(pack_layer_test PRIVATE include)
+  add_test(NAME pack_layer_test COMMAND pack_layer_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/artifact/pack_layer_golden.txt
+           $<TARGET_FILE:strata-pack-layer>)
+  set_tests_properties(pack_layer_test PROPERTIES TIMEOUT 120)
+
+  # the MTP draft head's GGUF packer (tools/mtp_pack.py): the gguf-py container layout and the three expert
+  # quantizers, against the reference's own bytes for all three arms (tools/gen_mtp_pack_golden.py)
+  add_executable(strata-mtp-pack src/artifact/mtp_pack_main.cpp)
+  target_include_directories(strata-mtp-pack PRIVATE include)
+  add_executable(mtp_pack_test tests/artifact/mtp_pack_test.cpp)
+  target_include_directories(mtp_pack_test PRIVATE include)
+  add_test(NAME mtp_pack_test COMMAND mtp_pack_test
+           ${CMAKE_CURRENT_SOURCE_DIR}/tests/artifact/mtp_pack_golden.txt
+           $<TARGET_FILE:strata-mtp-pack>)
+  set_tests_properties(mtp_pack_test PROPERTIES TIMEOUT 120)
 
   # the hipBLASLt tuning header's architecture gate: RDNA4 siblings share solution IDs, RDNA3 siblings share
   # theirs, cross-family pairs and version mismatches stay rejected (synthetic tables: no model, no GPU)
@@ -286,6 +460,30 @@ target_link_libraries(strata_plan INTERFACE strata_warnings)
 
 add_executable(strata-plan src/plan/plan_main.cpp)
 target_link_libraries(strata-plan PRIVATE strata_plan)
+
+# ---- strata_profile (the expert cache's CPU-side tooling) ------------------------------------
+# NO GPU DEPENDENCY, so it is built unconditionally and a CPU-only tool can link it: the profile format and its
+# ranking, the routing trace, and the eviction simulation.  The profile functions used to live in
+# src/core/expert_cache.cpp, inside the GPU-gated strata_engine, which is why the profile builder and the eviction
+# benchmark could not have used the one implementation of the format that already existed.
+add_library(strata_profile STATIC src/core/expert_profile.cpp src/core/eviction_sim.cpp src/core/cache_replay.cpp)
+target_include_directories(strata_profile PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(strata_profile PUBLIC strata_warnings)
+
+add_executable(strata-profile src/core/profile_main.cpp)
+target_link_libraries(strata-profile PRIVATE strata_profile)
+
+add_executable(strata-evict src/core/evict_main.cpp)
+target_link_libraries(strata-evict PRIVATE strata_profile)
+
+# make_profile_mix.py's ranking is different (weighted distributions, not summed counts), which is why the
+# reference has two tools and so does this.
+add_executable(strata-profile-mix src/core/profile_mix_main.cpp)
+target_link_libraries(strata-profile-mix PRIVATE strata_profile)
+
+# the engine's own adaptive policy, replayed offline (tools/replay_cache_policy.py)
+add_executable(strata-cache-replay src/core/cache_replay_main.cpp)
+target_link_libraries(strata-cache-replay PRIVATE strata_profile)
 
 # ---- strata_core (GPU runtime) ---------------------------------------------
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
@@ -475,7 +673,7 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     src/core/conversation_snapshot.cpp src/core/conversation_state.cpp src/core/conversation_memory.cpp src/core/peer_experts.cpp
     src/core/arch_defaults.cpp src/core/vmm.cpp src/core/conversation_file.cpp)
   target_include_directories(strata_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu ${_strata_gpu_runtime_target})
+  target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu strata_profile ${_strata_gpu_runtime_target})
   if(STRATA_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/exchange_storage_test.cpp")
     add_executable(exchange_storage_test tests/core/exchange_storage_test.cpp)
     target_include_directories(exchange_storage_test PRIVATE include)
@@ -1251,16 +1449,14 @@ if(STRATA_NATIVE_EXPERTS)
   if(STRATA_GGML_DIR)
     add_subdirectory(${STRATA_GGML_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
   else()
-    include(FetchContent)
-    FetchContent_Declare(strata_llamacpp
-      GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
-      GIT_TAG 3cf03257f219afbe7334045ff7c6a06ac68c627d
-      GIT_SHALLOW FALSE)
-    FetchContent_GetProperties(strata_llamacpp)
-    if(NOT strata_llamacpp_POPULATED)
-      FetchContent_Populate(strata_llamacpp)
+    # No network fetch: the build uses a llama.cpp source tree already on disk (commit
+    # 3cf03257f219afbe7334045ff7c6a06ac68c627d), normally third_party/llama.cpp.
+    if(EXISTS ${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/CMakeLists.txt)
+      add_subdirectory(${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
+    else()
+      message(FATAL_ERROR "llama.cpp source not found: put llama.cpp at commit 3cf03257f219afbe7334045ff7c6a06ac68c627d "
+                          "in third_party/llama.cpp, or pass -DSTRATA_GGML_DIR=<path>. The build never downloads it.")
     endif()
-    add_subdirectory(${strata_llamacpp_SOURCE_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
   endif()
   # part of strata_kernels_cpu (the pool calls these and they call its CPU probe: one library, so GNU ld's
   # one-pass static linking has no cycle to resolve)

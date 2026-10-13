@@ -55,6 +55,14 @@
 #include <sys/syscall.h>
 #endif
 
+namespace {
+/// Opt-out switches: on unless the variable is set to 0.
+bool env_enabled(const char* name) {
+    const char* v = std::getenv(name);
+    return v == nullptr || std::atoi(v) != 0;
+}
+}  // namespace
+
 // a 64-bit seek (as in pinned.cu): the 32-bit `fseek` wraps past 4 GiB, and the spelling differs per platform
 #ifndef STRATA_FSEEK64
 #ifdef _WIN32
@@ -978,7 +986,12 @@ void FileExpertSource::close() {
     io_stop();
     inputs_.clear();
     if (complement_arena_ != nullptr) {
-        if (complement_pinned_ && !complement_registered_) (void) cudaFreeHost(complement_arena_);
+        if (complement_mmapped_) {
+#if defined(__linux__)
+            (void) cudaHostUnregister(complement_arena_);
+            (void) munmap(complement_arena_, (size_t) complement_map_bytes_);
+#endif
+        } else if (complement_pinned_ && !complement_registered_) (void) cudaFreeHost(complement_arena_);
         else {
             if (complement_registered_) (void) cudaHostUnregister(complement_arena_);
             if (complement_locked_ > 0)
@@ -1000,6 +1013,8 @@ void FileExpertSource::close() {
     exchanges_ = 0;
     file_reads_.store(0);
     complement_arena_ = nullptr;
+    complement_mmapped_ = false;
+    complement_map_bytes_ = 0;
     complement_host_ = nullptr;
     complement_device_ = nullptr;
     complement_bytes_ = 0;
@@ -2598,6 +2613,7 @@ bool FileExpertSource::pin_cache_complement(
     const ExpertCache& cache, std::string& err, bool pin,
     const std::vector<std::pair<int32_t, int32_t>>& additional_gpu_pairs, int64_t lend_from_slot,
     uint64_t headroom_bytes, uint64_t budget_bytes, const std::vector<std::pair<int32_t, int32_t>>* rank) {
+    const strata::aux_cpus::WidenGuard widen;   // the touch / copy threads below must not inherit the host core
     err.clear();
     const auto pin_t0 = std::chrono::steady_clock::now();
     if (base_ == nullptr) { err = "FileExpertSource: open the mapped experts before pinning a complement"; return false; }
@@ -2792,10 +2808,17 @@ bool FileExpertSource::pin_cache_complement(
     uint64_t locked = 0;
     uint64_t partial_pin = 0;   ///< CS-T: a registered prefix of a locked arena
     uint64_t lock_off = 0;      ///< where the working-set lock starts (after the registered prefix)
+    bool mmapped = false;       ///< the arena is an anonymous mmap registered with cudaHostRegister (STRATA_FAST_PIN)
+    uint64_t map_bytes = 0;     ///< ... and its mapping length
     std::string note;
     auto release = [&]() {
         if (arena == nullptr) return;
-        if (pinned_ok) (void) cudaFreeHost(arena);
+        if (mmapped) {
+#if defined(__linux__)
+            (void) cudaHostUnregister(arena);
+            (void) munmap(arena, (size_t) map_bytes);
+#endif
+        } else if (pinned_ok) (void) cudaFreeHost(arena);
         else {
             if (partial_pin > 0) (void) cudaHostUnregister(arena);
             if (locked > 0) strata::platform::unlock_resident((uint8_t*) arena + lock_off, locked);
@@ -2856,9 +2879,65 @@ bool FileExpertSource::pin_cache_complement(
             }
         }
 #endif
-        if (pin && !paced) {
+#if defined(__linux__)
+        // Fast pinned allocation: cudaHostAlloc page-locks and zeroes the pages on ONE thread (8 GiB = 4.9 s, 1.75 GB/s
+        // on 2x V100 / 28 cores).  An anonymous mapping first-touched by all hardware threads and then registered with
+        // cudaHostRegister is the same memory, page-locked, mapped and portable (8 GiB = 1.26 s).  On any failure the
+        // mapping is given back and the cudaHostAlloc path below runs as before.  STRATA_FAST_PIN=0: that path only.
+        if (pin && !paced && env_enabled("STRATA_FAST_PIN")) {
+            const auto fast_t0 = std::chrono::steady_clock::now();
+            const uint64_t pg = 4096;
+            const uint64_t len = (bytes + pg - 1) / pg * pg;
+            void* m = mmap(nullptr, (size_t) len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            if (m != MAP_FAILED) {
+                {
+                    constexpr uint64_t kChunk = 64ull << 20;
+                    const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
+                    const int nthr = (int) std::min<uint64_t>(std::min<unsigned>(hw, 32u), (len + kChunk - 1) / kChunk);
+                    std::atomic<uint64_t> next_chunk{0};
+                    auto touch = [&]() {
+                        for (;;) {
+                            const uint64_t from = next_chunk.fetch_add(kChunk);
+                            if (from >= len) return;
+                            const uint64_t to = std::min<uint64_t>(len, from + kChunk);
+                            for (uint64_t at = from; at < to; at += pg) ((volatile uint8_t*) m)[at] = 0;
+                        }
+                    };
+                    std::vector<std::thread> tp;
+                    for (int i = 1; i < nthr; ++i) tp.emplace_back(touch);
+                    touch();
+                    for (auto& t : tp) t.join();
+                }
+                const cudaError_t reg = cudaHostRegister(m, (size_t) len, cudaHostRegisterMapped | cudaHostRegisterPortable);
+                void* alias = nullptr;
+                if (reg == cudaSuccess && cudaHostGetDevicePointer(&alias, m, 0) == cudaSuccess && alias != nullptr) {
+                    arena = m;
+                    device = (const uint8_t*) alias;
+                    pinned_ok = true;
+                    mmapped = true;
+                    map_bytes = len;
+                    note = "page-locked and mapped";
+                    std::fprintf(stderr, "FileExpertSource: pinned allocation: %.2f GiB in %.2f s (mmap + parallel first-touch + "
+                                         "cudaHostRegister)\n", (double) bytes / 1073741824.0,
+                                 std::chrono::duration<double>(std::chrono::steady_clock::now() - fast_t0).count());
+                } else {
+                    if (reg == cudaSuccess) (void) cudaHostUnregister(m);
+                    (void) cudaGetLastError();
+                    (void) munmap(m, (size_t) len);
+                    std::fprintf(stderr, "FileExpertSource: fast pinned allocation failed (%s); using cudaHostAlloc\n",
+                                 reg == cudaSuccess ? "no device alias" : cudaGetErrorString(reg));
+                }
+            }
+        }
+#endif
+        if (pin && !paced && arena == nullptr) {
+            const auto alloc_t0 = std::chrono::steady_clock::now();
             const cudaError_t allocated = cudaHostAlloc(&arena, (size_t) bytes,
                                                          cudaHostAllocMapped | cudaHostAllocPortable);
+            if (allocated == cudaSuccess)
+                std::fprintf(stderr, "FileExpertSource: pinned allocation: %.2f GiB in %.2f s (cudaHostAlloc)\n",
+                             (double) bytes / 1073741824.0,
+                             std::chrono::duration<double>(std::chrono::steady_clock::now() - alloc_t0).count());
             if (allocated == cudaSuccess) {
                 void* alias = nullptr;
                 const cudaError_t aliased = cudaHostGetDevicePointer(&alias, arena, 0);
@@ -3043,6 +3122,68 @@ bool FileExpertSource::pin_cache_complement(
         if (fail_msg.empty()) fail_msg = m;
         failed.store(true);
     };
+#if defined(__linux__)
+    bool use_pread = direct_.empty() && !unmapped_ && bytes > 0 && env_enabled("STRATA_COMPLEMENT_PREAD");
+    if (use_pread) {
+        if (role_ptr_.empty()) use_pread = fd_ >= 0 && base_ != nullptr;
+        else {
+            use_pread = !maps_.empty();
+            for (const Map& m : maps_) if (m.closed || m.fd < 0) use_pread = false;
+        }
+    }
+    // One layer's needed experts into the arena with large preads; false (nothing relied on) on any problem.
+    auto pread_layer = [&](int64_t layer) -> bool {
+        constexpr uint64_t kRun = 32ull << 20;   // one pread at most this long
+        const uint64_t blob = layer_blob_bytes_[(size_t) layer];
+        const size_t row = (size_t) layer * (size_t) n_expert_;
+        if (blob == 0) return false;
+        for (int64_t e = 0; e < n_expert_; ++e) {
+            const uint64_t o = offsets[row + (size_t) e];
+            if (o != kNoComplement && (o > bytes || blob > bytes - o)) return false;
+        }
+        if (role_ptr_.empty()) {
+            const uint64_t lo = layer_offsets_[(size_t) layer];
+            if (lo > mapped_bytes_ || blob * (uint64_t) n_expert_ > mapped_bytes_ - lo) return false;
+            const int64_t max_run = (int64_t) std::max<uint64_t>(1, kRun / blob);
+            for (int64_t e = 0; e < n_expert_;) {
+                const uint64_t o = offsets[row + (size_t) e];
+                if (o == kNoComplement) { ++e; continue; }
+                int64_t n = 1;
+                while (n < max_run && e + n < n_expert_ && offsets[row + (size_t) (e + n)] == o + (uint64_t) n * blob) ++n;
+                if (!pread_full(fd_, (uint8_t*) host + (size_t) o, (uint64_t) n * blob, lo + (uint64_t) e * blob)) return false;
+                e += n;
+            }
+            return true;
+        }
+        thread_local std::unique_ptr<uint8_t[]> scratch;
+        thread_local uint64_t scratch_cap = 0;
+        uint64_t at = 0;   // the role's offset inside the blob
+        for (int r = 0; r < 3; ++r) {
+            const size_t i = (size_t) (3 * layer + r);
+            const uint64_t per = role_bytes_[i];
+            const size_t f = (size_t) role_file_[i];
+            if (per == 0 || f >= maps_.size()) return false;
+            const uint64_t base_off = (uint64_t) (role_ptr_[i] - maps_[f].base);
+            const int64_t max_run = (int64_t) std::max<uint64_t>(1, kRun / per);
+            if (scratch_cap < (uint64_t) max_run * per) {
+                scratch.reset(new uint8_t[(size_t) ((uint64_t) max_run * per)]);
+                scratch_cap = (uint64_t) max_run * per;
+            }
+            for (int64_t e = 0; e < n_expert_;) {
+                if (offsets[row + (size_t) e] == kNoComplement) { ++e; continue; }
+                int64_t n = 1;
+                while (n < max_run && e + n < n_expert_ && offsets[row + (size_t) (e + n)] != kNoComplement) ++n;
+                if (!pread_full(maps_[f].fd, scratch.get(), (uint64_t) n * per, base_off + (uint64_t) e * per)) return false;
+                for (int64_t k = 0; k < n; ++k)
+                    std::memcpy((uint8_t*) host + (size_t) offsets[row + (size_t) (e + k)] + at, scratch.get() + (uint64_t) k * per,
+                                (size_t) per);
+                e += n;
+            }
+            at += per;
+        }
+        return true;
+    };
+#endif
     auto worker = [&]() {
         for (;;) {
             const int64_t layer = next_layer.fetch_add(1);
@@ -3058,14 +3199,30 @@ bool FileExpertSource::pin_cache_complement(
                 batch.clear();
                 return true;
             };
-            if (direct_.empty()) {   // mapped reads: ask for the layer's blobs before copying them
+            // STRATA_COMPLEMENT_PREAD (default on): the layer's needed experts read with large pread()s straight into
+            // the arena (experts.bin: contiguous runs; the GGUF in place: per-role runs through a scratch buffer)
+            // instead of one page-faulted memcpy per expert, which reached only ~1.2 GB/s on a cold file cache.  A
+            // layer that fails any check or read falls back to the per-expert copy below.
+            bool layer_done = false;
+#if defined(__linux__)
+            if (use_pread && bytes > 0) {
+                layer_done = pread_layer(layer);
+                if (layer_done) {
+                    uint64_t n_needed = 0;
+                    for (int64_t expert = 0; expert < n_expert_; ++expert)
+                        if (offsets[(size_t) layer * (size_t) n_expert_ + (size_t) expert] != kNoComplement) ++n_needed;
+                    copied.fetch_add(blob_bytes * n_needed);
+                }
+            }
+#endif
+            if (direct_.empty() && !layer_done) {   // mapped reads: ask for the layer's blobs before copying them
                 std::vector<std::pair<int32_t, int32_t>> ahead;
                 for (int64_t expert = 0; expert < n_expert_; ++expert)
                     if (offsets[(size_t) layer * (size_t) n_expert_ + (size_t) expert] != kNoComplement)
                         ahead.emplace_back((int32_t) layer, (int32_t) expert);
                 (void) advise_pairs(ahead.data(), (int64_t) ahead.size());
             }
-            for (int64_t expert = 0; expert < n_expert_; ++expert) {
+            for (int64_t expert = 0; !layer_done && expert < n_expert_; ++expert) {
                 const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
                 const uint64_t offset = offsets[index];
                 if (offset == kNoComplement) continue;
@@ -3121,7 +3278,11 @@ bool FileExpertSource::pin_cache_complement(
         }
     };
     {
-        const int threads = (int) std::max<int64_t>(1, std::min<int64_t>(6, n_layers_));
+        int max_threads = 6;
+#if defined(__linux__)
+        if (use_pread) max_threads = (int) std::max(6u, std::min(16u, std::thread::hardware_concurrency()));
+#endif
+        const int threads = (int) std::max<int64_t>(1, std::min<int64_t>(max_threads, n_layers_));
         std::vector<std::thread> pool;
         for (int i = 1; i < threads; ++i) pool.emplace_back(worker);
         worker();
@@ -3161,6 +3322,8 @@ bool FileExpertSource::pin_cache_complement(
     }
 
     complement_arena_ = arena;
+    complement_mmapped_ = mmapped;
+    complement_map_bytes_ = map_bytes;
     complement_host_ = host;
     complement_device_ = device;
     complement_bytes_ = bytes;

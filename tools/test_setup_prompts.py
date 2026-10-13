@@ -55,10 +55,8 @@ class Prompts(unittest.TestCase):
 
 class BuildTools(unittest.TestCase):
     def test_eof_never_starts_an_installer(self):
-        for win in (True, False):
-            with self.subTest(win=win), mock.patch.object(setup, "WIN", win), \
-                    mock.patch.object(setup, "find_nvcc", return_value=(None, (0, 0))), \
-                    mock.patch.object(setup, "find_vcvars", return_value=None), \
+        for _ in (0,):
+            with mock.patch.object(setup, "find_nvcc", return_value=(None, (0, 0))), \
                     mock.patch.object(setup.shutil, "which", side_effect=lambda name: None if name == "g++" else name), \
                     mock.patch.object(setup, "run", side_effect=AssertionError("installer started")) as run, \
                     mock.patch.object(setup, "download", side_effect=AssertionError("download started")) as download, \
@@ -68,21 +66,6 @@ class BuildTools(unittest.TestCase):
                 self.assertEqual(cm.exception.code, 1)
                 run.assert_not_called()
                 download.assert_not_called()
-
-    def test_yes_still_installs_missing_windows_tools(self):
-        nvcc, vcvars = Path("nvcc"), Path("vcvars64.bat")
-        with mock.patch.object(setup, "WIN", True), \
-                mock.patch.object(setup, "find_nvcc", side_effect=[(None, (0, 0)), (nvcc, (13, 0))]), \
-                mock.patch.object(setup, "find_vcvars", side_effect=[None, vcvars, vcvars, vcvars]), \
-                mock.patch.object(setup.shutil, "which", return_value="winget"), \
-                mock.patch.object(setup, "run") as run, \
-                mock.patch("builtins.input", side_effect=AssertionError("unexpected prompt")), \
-                contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(setup.install_build_tools({"arch": "120"}, True), (nvcc, vcvars))
-        commands = [call.args[0] for call in run.call_args_list]
-        self.assertEqual(len(commands), 2)
-        self.assertIn("Microsoft.VisualStudio.2022.BuildTools", commands[0])
-        self.assertIn("Nvidia.CUDA", commands[1])
 
 
 if __name__ == "__main__":

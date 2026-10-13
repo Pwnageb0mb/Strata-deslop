@@ -1,5 +1,5 @@
 """tools/strata_inspect.py's verdict, offline: the fingerprints of the files setup installs (data/gguf_fingerprints.json)
-stand in for headers read from the network.
+stand in for the headers of those files.
 
     python -m unittest tools.test_strata_inspect
 """

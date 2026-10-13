@@ -89,3 +89,35 @@ kernels' output, GPU work per verify window 22.8 -> 21.2 ms on a V100-SXM2 in th
 sm_70 only when `STRATA_SM70_TABLE=1` is set. They become the default once the contributor has confirmed them on a V100 with
 the 0.1.41 code. Without the variable sm_70 runs what 0.1.40.3 ran. The single switches (`STRATA_EXP_MODE`, `STRATA_MMVQ_IL`,
 `STRATA_GR_FAST`) still apply on top.
+
+## Docker
+
+The image compiles its engine during `docker build`, and the default base image is CUDA 13, which cannot target a
+V100 at all. Build it on a CUDA 12 base with the experimental arch instead:
+
+```sh
+docker build -t strata:v100 \
+  --build-arg CUDA_VERSION=12.9.1 \
+  --build-arg STRATA_CUDA_TOOLKIT=12 \
+  --build-arg CUDA_ARCHITECTURES=70 .
+```
+
+`STRATA_CUDA_TOOLKIT=12` does what setup does for a model on a V100: it builds into `engine-cuda12/` with
+`-DSTRATA_EXPERIMENTAL_SM60=ON`, and defaults `CUDA_ARCHITECTURES` to `70`. A PC that also has a newer card
+builds for both (`--build-arg CUDA_ARCHITECTURES=70;86`). `STRATA_BUILD_JOBS=all` (the default in the Dockerfile)
+compiles on every core; on a normal install the build keeps half the cores free.
+
+Run it as the Dockerfile documents (`--gpus all`, `-p 8080:8080`, `-v strata-data:/data`, `-e MODEL=...`). Setup
+in the container finds the Volta cards through `nvidia-smi`, picks the CUDA 12 engine by itself, and reuses the
+`engine-cuda12/` the image shipped - the first start downloads only the model.
+
+Checked on this machine (2x Tesla PG500-216, driver 580): the image builds, both cards are visible in the
+container, the engine binary reports `strata 0.1.43`, and an `-arch=sm_70` CUDA kernel runs on both cards as the
+unprivileged `strata` user. The model itself was not downloaded here (83.6 GB for IQ3_S), so a full request path
+on a V100 is still the one thing this page has not measured in a container.
+
+The image is two-stage: the engine is compiled in the CUDA **devel** image and the result is copied into the CUDA
+**runtime** image, which runs as `strata` (uid 1001) and owns `/opt/strata` and `/data`. That is 7.92 GB instead
+of 17.5 GB and 18 HIGH/CRITICAL findings instead of 621 (docs/SECURITY_AUDIT.md). One consequence: the runtime
+image has no compiler, so a card outside `CUDA_ARCHITECTURES` needs the image rebuilt, as it always did.
+

@@ -358,4 +358,37 @@ inline std::string set_topology(int, const std::vector<int>&) { return "strata a
 
 #endif
 
+/// Startup phases (the pinned complement, the GPU cache fill) spawn helper threads from the host thread, which is
+/// pinned to one CPU (--host-core) - and a new thread inherits its creator's mask, so every helper ran on that one
+/// CPU.  While this guard lives the calling thread may run on every CPU the process may use, so the threads it
+/// starts do too; the destructor puts its own mask back (the helpers are joined by then).  STRATA_WIDEN_STARTUP=0:
+/// off.
+class WidenGuard {
+public:
+    WidenGuard() {
+#if defined(__linux__)
+        const char* v = std::getenv("STRATA_WIDEN_STARTUP");
+        if (v != nullptr && std::strcmp(v, "0") == 0) return;
+        if (sched_getaffinity(0, sizeof saved_, &saved_) != 0) return;
+        cpu_set_t all;
+        CPU_ZERO(&all);
+        for (int c = 0; c < CPU_SETSIZE; ++c) CPU_SET(c, &all);   // the kernel keeps only the CPUs the cpuset allows
+        active_ = sched_setaffinity(0, sizeof all, &all) == 0;
+#endif
+    }
+    ~WidenGuard() {
+#if defined(__linux__)
+        if (active_) (void) sched_setaffinity(0, sizeof saved_, &saved_);
+#endif
+    }
+    WidenGuard(const WidenGuard&) = delete;
+    WidenGuard& operator=(const WidenGuard&) = delete;
+
+private:
+#if defined(__linux__)
+    cpu_set_t saved_{};
+#endif
+    bool active_ = false;
+};
+
 }  // namespace strata::aux_cpus

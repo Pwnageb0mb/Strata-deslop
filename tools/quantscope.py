@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # From https://github.com/1872183316/quantscope (commit bfdf205), used by tools/strata_inspect.py and setup's --inspect.
-"""quantscope: find the real quantization of a model without downloading it.
+"""quantscope: find the real quantization of a model from its file headers.
 
-Reads only file headers (a few MB per file, via HTTP range requests) of GGUF or safetensors
-models on ModelScope, Hugging Face, any URL, or local disk, and reports the actual storage
-type and bits per weight of every tensor group (routed experts, attention, embeddings, ...).
+Reads only the headers of local GGUF or safetensors files (a few MB per file) and reports the
+actual storage type and bits per weight of every tensor group (routed experts, attention,
+embeddings, ...). Nothing is downloaded and no network is used: only local files are read.
 File names such as "IQ4_XS" or "Q4_K_XL" are recipe labels; the header is the ground truth.
 
 Examples:
-  python quantscope.py ms:unsloth/Qwen3.8-Flash-Next-GGUF              # list variants
-  python quantscope.py ms:unsloth/Qwen3.8-Flash-Next-GGUF UD-Q4_K_XL   # one variant
-  python quantscope.py ms:unsloth/Qwen3.8-Flash-Next-GGUF --all        # compare all variants
-  python quantscope.py hf:Qwen/Qwen3-30B-A3B-GPTQ-Int4
+  python quantscope.py models/                                  # list variants in a folder
+  python quantscope.py models/ UD-Q4_K_XL                       # one variant
+  python quantscope.py models/ --all                            # compare all variants
   python quantscope.py models/model-00001-of-00003.gguf
 """
 
@@ -26,85 +25,38 @@ import os
 import re
 import struct
 import sys
-import urllib.request
 from collections import defaultdict
 
 # ---------------------------------------------------------------- sources --------------------
 
-HUBS = {
-    "ms": ("https://modelscope.cn/api/v1/models/{repo}/repo/files?Recursive=true",
-           "https://modelscope.cn/models/{repo}/resolve/master/{path}"),
-    "hf": ("https://huggingface.co/api/models/{repo}/tree/main?recursive=true",
-           "https://huggingface.co/{repo}/resolve/main/{path}"),
-}
-if os.environ.get("HF_ENDPOINT"):
-    base = os.environ["HF_ENDPOINT"].rstrip("/")
-    HUBS["hf"] = (base + "/api/models/{repo}/tree/main?recursive=true",
-                  base + "/{repo}/resolve/main/{path}")
-
-
-def http(url: str, start: int | None = None, end: int | None = None) -> bytes:
-    headers = {"User-Agent": "quantscope"}
-    if start is not None:
-        headers["Range"] = f"bytes={start}-{end}"
-    for attempt in range(5):
-        try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=headers),
-                                        timeout=60) as r:
-                return r.read()
-        except Exception as error:  # noqa: BLE001 - network retries
-            if attempt == 4:
-                raise RuntimeError(f"{url}: {error}") from error
-    raise AssertionError
+REMOTE = re.compile(r"^(ms|hf):|^https?://", re.IGNORECASE)
 
 
 class Source:
-    """A file readable by byte ranges (remote or local) with a known size."""
+    """A local file readable by byte ranges, with a known size."""
 
-    def __init__(self, name: str, size: int, url: str | None = None, path: str | None = None):
-        self.name, self.size, self.url, self.path = name, size, url, path
+    def __init__(self, name: str, size: int, path: str):
+        self.name, self.size, self.path = name, size, path
 
     def read(self, start: int, length: int) -> bytes:
         length = max(0, min(length, self.size - start))
         if length == 0:
             return b""
-        if self.path:
-            with open(self.path, "rb") as f:
-                f.seek(start)
-                return f.read(length)
-        return http(self.url, start, start + length - 1)
-
-
-def list_hub(kind: str, repo: str) -> list[Source]:
-    list_url, file_url = HUBS[kind]
-    data = json.loads(http(list_url.format(repo=repo)))
-    out = []
-    if kind == "ms":
-        for f in data["Data"]["Files"]:
-            if f.get("Type") == "blob":
-                out.append(Source(f["Path"], int(f.get("Size") or 0),
-                                  url=file_url.format(repo=repo, path=f["Path"])))
-    else:
-        for f in data:
-            if f.get("type") == "file":
-                size = int((f.get("lfs") or {}).get("size") or f.get("size") or 0)
-                out.append(Source(f["path"], size, url=file_url.format(repo=repo, path=f["path"])))
-    return out
+        with open(self.path, "rb") as f:
+            f.seek(start)
+            return f.read(length)
 
 
 def resolve(spec: str) -> list[Source]:
-    m = re.match(r"^(ms|hf):([^/]+/[^/:]+)$", spec)
-    if m:
-        return list_hub(m.group(1), m.group(2))
-    if spec.startswith(("http://", "https://")):
-        head = urllib.request.Request(spec, method="HEAD", headers={"User-Agent": "quantscope"})
-        with urllib.request.urlopen(head, timeout=60) as r:
-            size = int(r.headers.get("Content-Length") or 0)
-        return [Source(spec.rsplit("/", 1)[-1], size, url=spec)]
+    if REMOTE.match(spec):
+        raise ValueError(f"{spec}: only local files are read (give a .gguf or safetensors file "
+                         "or a folder on disk; download the model first)")
+    if not os.path.exists(spec):
+        raise ValueError(f"{spec}: no such file or folder")
     paths = [spec] if os.path.isfile(spec) else sorted(
         glob.glob(os.path.join(spec, "**", "*"), recursive=True))
     return [Source(os.path.relpath(p, spec) if os.path.isdir(spec) else os.path.basename(p),
-                   os.path.getsize(p), path=p) for p in paths if os.path.isfile(p)]
+                   os.path.getsize(p), p) for p in paths if os.path.isfile(p)]
 
 
 def variant_of(name: str) -> str:
@@ -353,17 +305,20 @@ def scan(label: str, files: list[Source], meta_config: dict | None) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("source", help="ms:owner/repo, hf:owner/repo, URL, file or directory")
+    parser.add_argument("source", help="a local file or folder")
     parser.add_argument("variant", nargs="?", help="variant name or glob (e.g. UD-Q4_K_XL)")
     parser.add_argument("--all", action="store_true", help="scan and compare every variant")
     args = parser.parse_args()
 
-    files = [f for f in resolve(args.source)
-             if f.name.endswith((".gguf", ".safetensors", ".ninfer"))]
+    try:
+        everything = resolve(args.source)
+    except ValueError as error:
+        sys.exit(str(error))
+    files = [f for f in everything if f.name.endswith((".gguf", ".safetensors", ".ninfer"))]
     config = None
-    for f in resolve(args.source) if args.source.startswith(("ms:", "hf:")) else []:
+    for f in everything:
         if f.name == "config.json":
-            config = json.loads(http(f.url))
+            config = json.loads(f.read(0, f.size))
             if config.get("quantization_config"):
                 print("config.json quantization_config:",
                       json.dumps(config["quantization_config"])[:400])

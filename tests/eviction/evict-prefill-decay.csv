@@ -1,0 +1,4 @@
+slots,scope,policy,window,lookups,hits,hit_rate,evictions
+4105,global,fill-only,all,14,4,0.2857,0
+4105,global,lru,all,14,4,0.2857,0
+4105,global,lfu-decay,all,14,4,0.2857,0

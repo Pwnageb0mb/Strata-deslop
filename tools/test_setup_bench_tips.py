@@ -18,19 +18,13 @@ from test_setup_hybrid import fake_sys  # noqa: E402
 BASE = ["--expert-cache", "auto", "--prefill", "auto", "--max-context", "65536"]
 
 
-def tips(args=BASE, env=None, ram=32.0, model=20.0, vram=12.0, vision="none", win=False):
-    return setup.bench_tips(list(args), env, ram, model, vram, vision, win)
+def tips(args=BASE, env=None, ram=32.0, model=20.0, vram=12.0, vision="none"):
+    return setup.bench_tips(list(args), env, ram, model, vram, vision)
 
 
 class BenchTips(unittest.TestCase):
     def test_nothing_to_say_on_a_plain_pc(self):
         self.assertEqual(tips(), [])
-
-    def test_explicit_cache_warns_on_windows_only(self):
-        a = ["--expert-cache", "2400", "--prefill", "auto"]
-        self.assertTrue(any("--expert-cache 2400" in t and "7x" in t for t in tips(a, win=True)))
-        self.assertEqual(tips(a, win=False), [])
-        self.assertEqual(tips(BASE, win=True), [])                      # auto: nothing to warn about
 
     def test_prefill_auto_32768_follows_the_ram(self):
         self.assertTrue(any("auto:32768" in t and t.startswith("tip") for t in tips(ram=128)))
@@ -61,7 +55,7 @@ class BenchTips(unittest.TestCase):
         a = ["--expert-cache", "2400", "--prefill", "auto", "--resident-experts"]
         before = list(a)
         env = {}
-        tips(a, env, ram=128, vision="gpu", win=True)
+        tips(a, env, ram=128, vision="gpu")
         self.assertEqual(a, before)
         self.assertEqual(env, {})
 

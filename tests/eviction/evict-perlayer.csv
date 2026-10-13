@@ -1,0 +1,9 @@
+slots,scope,policy,window,lookups,hits,hit_rate,evictions
+4105,per-layer,fill-only,all,14,4,0.2857,0
+4105,per-layer,lru,all,14,4,0.2857,0
+4105,per-layer,lfu-decay,all,14,4,0.2857,0
+4105,per-layer,oracle,all,14,4,0.2857,0
+96,per-layer,fill-only,all,14,4,0.2857,0
+96,per-layer,lru,all,14,4,0.2857,2
+96,per-layer,lfu-decay,all,14,4,0.2857,2
+96,per-layer,oracle,all,14,4,0.2857,2

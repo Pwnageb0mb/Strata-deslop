@@ -1,0 +1,40 @@
+# pack_layer golden v1 - tools/pack_layer.py's own build() (gen_pack_layer_golden.py)
+fixture pack_layer_fixture.gguf
+geom H=256 FF=64 NE=2 QK=64 block=18 role=4608 blob=13824
+layers 2
+stdout   layer 0: wrote 2 blobs at 0
+stdout   layer 1: wrote 2 blobs at 27648
+bin bytes 55296 sha256 ae156051d4a2133e7ce8082a5ecc1cb13f869c0c25a49385869397c9e47f7ee8
+manifest_begin
+{
+  "blob_bytes": 13824,
+  "offsets": {
+    "gate_up_codes": 0,
+    "down_codes": 8192,
+    "gate_up_scales": 12288,
+    "down_scales": 13312
+  },
+  "layers": [
+    {
+      "layer": 0,
+      "offset": 0,
+      "role_offsets": {
+        "gate": 0,
+        "up": 9216,
+        "down": 18432
+      }
+    },
+    {
+      "layer": 1,
+      "offset": 27648,
+      "role_offsets": {
+        "gate": 27648,
+        "up": 36864,
+        "down": 46080
+      }
+    }
+  ],
+  "n_layers": 2,
+  "total_bytes": 55296
+}
+manifest_end

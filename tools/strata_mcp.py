@@ -598,11 +598,6 @@ class Strata:
             hw["ram_gb"] = round(S.ram_gb(), 1) if S else round(own_ram_gb(), 1)
         except Exception:                               # noqa: BLE001
             hw["ram_gb"] = round(own_ram_gb(), 1)
-        if S and WIN:
-            try:
-                hw["page_file_gb"] = round(S.page_file_gb(), 1)
-            except Exception:                           # noqa: BLE001
-                pass
         try:
             if S:
                 name, avx2, avx512 = S.cpu_info()
@@ -625,18 +620,8 @@ class Strata:
                 g["problem"] = None
             g["usable"] = g["problem"] is None
         amd = []
-        if not WIN:
-            try:
-                amd = S.amd_gpus() if S else []
-                for g in amd:
-                    g["vendor"] = "amd"
-                    g["vram_gb"] = round(g["vram_gb"], 1)
-                    g["problem"] = S.amd_problem(g)
-                    g["usable"] = g["problem"] is None
-            except Exception:                           # noqa: BLE001
-                amd = []
-            if not amd and shutil.which("rocm-smi"):
-                amd = rocm_smi_gpus()
+        if not WIN and shutil.which("rocm-smi"):
+            amd = rocm_smi_gpus()
         hw["gpus"] = nv + amd
         if WIN:
             hw["display_adapters"] = windows_video_controllers()

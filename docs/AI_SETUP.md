@@ -112,14 +112,9 @@ Notes:
 - **Linux:** setup uses `sudo apt` (or dnf/pacman) to install Python with venv if it is missing, and on AMD may need
   `build-essential` and `git`. You cannot type the user's password: if a `sudo` step is needed, ask the user to run it
   (e.g. `sudo apt install python3-venv build-essential git`) and then rerun setup.
-- **AMD on Linux:** setup installs ROCm into `.venv` (~10 GB, no sudo) unless a system ROCm 7 exists, and compiles the
-  engine for the card (10-20 minutes, once).
-- **AMD on Windows (new in 0.1.34):** setup downloads the ready-made AMD engine (~550 MB, ROCm included) - nothing
-  is compiled and only the AMD driver is needed. Before the model download it runs `engine\strata-device.exe
-  --list-devices`; if that does not list the card, the driver is the problem (tell the user to update AMD Software).
-  One card per model and no images on Windows for now. It is new: ask the user to report how it runs (docs/AMD_HIP.md).
-- **NVIDIA with no ready-made engine for the card:** setup offers to install build tools and compile (20-40 minutes);
-  `--yes` accepts.
+- **AMD and Windows** are not supported by this checkout: setup builds the CUDA engine on Linux only.
+- **NVIDIA:** setup always compiles the engine (20-40 minutes); it needs nvcc and g++ already installed, and stops
+  with instructions when they are missing.
 
 ## 5. While it downloads, tell the user
 

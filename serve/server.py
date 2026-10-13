@@ -8,7 +8,7 @@ non-stream), GET /v1/models, GET /models, GET /props, GET /slots, GET /health, G
 Tools from MCP servers (serve/mcp.py, `"mcp_servers"` in the config or --mcp-config) are offered only to requests that
 ask for them with `"strata_mcp": true` - the web app does; other clients see exactly the API they always saw.
 Images (optional, when the config has a "vision" entry): OpenAI image_url parts and Anthropic image blocks (base64
-data, http(s) URLs or local file paths) go through `strata-vision` (the model's mmproj file) and reach the engine as
+data: URLs only; URLs are not fetched and files are not read) go through `strata-vision` (the model's mmproj file) and reach the engine as
 embeddings (`GENI`).  JPEG/PNG/BMP/GIF go straight in; WebP, TIFF, AVIF, ... (agents like omp send WebP) are
 converted to PNG first with Pillow.
 Requests whose prompt plus max tokens exceed the engine's context are REJECTED with 400, never truncated.
@@ -28,6 +28,7 @@ import hashlib
 import hmac
 import codecs
 import ctypes
+import ipaddress
 import json
 import math
 import os
@@ -43,9 +44,7 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.request
 import uuid
-from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterator, Protocol
@@ -58,12 +57,17 @@ from serve.frontend import (THINK_END, ChatTemplate, Event, OutputParser, anthro
                             forced_call, images_of, literal_tags, mark_think_literals, openai_to_messages,
                             tool_choice_of, unmark_think_literals)
 from serve.mcp import McpCancelled, hub_from_config  # noqa: E402
-from serve import runconfig  # noqa: E402
+from serve import native_request, native_stream, runconfig  # noqa: E402
+from serve.native_stream import (F_BUF as NS_BUF, F_DETOK as NS_DETOK, F_HIT as NS_HIT,  # noqa: E402
+                                 F_PENDING as NS_PENDING, F_THINK_END as NS_THINK_END, F_THINKING as NS_THINKING)
 from serve import logit_bias as bias_api  # noqa: E402
 from serve.winjob import contain  # noqa: E402
 from serve.structured import StructuredOutputError, prepare_format, validated_json  # noqa: E402
 from serve import responses as responses_api  # noqa: E402
 from serve.responses import ResponsesError, error_body as responses_error_body  # noqa: E402
+
+# the request translation: libstrata_text's when switched on (serve/native_request.py), else frontend's own
+openai_to_messages, anthropic_to_messages = native_request.converters(openai_to_messages, anthropic_to_messages)
 
 IM_END = "<|im_end|>"
 IMAGE_PAD = "<|image_pad|>"
@@ -1939,17 +1943,6 @@ class StrataEngine:
                 self.progress_ms, self.reused = 0, 0
 
 
-IMAGE_URL_MAX = 32 << 20        # an image URL is read up to this (the web app attaches pictures of up to 20 MB)
-
-
-def network_path(path: str) -> bool:
-    r"""A path to another computer: \\host\share or //host/share (either slash), \\?\UNC\host\..., \\.\UNC\host\...
-    or the NT form \??\UNC\host\...  Windows connects to that host at the first look at the path (os.path.isfile is
-    enough) and signs in with the user's NTLM credentials.  \\?\ and \??\ name local files too; no client needs them."""
-    p = path.replace("/", "\\")
-    return p.startswith("\\\\") or p.startswith("\\??\\")
-
-
 def vision_start_error(line: str, log=None) -> str:
     """The message when the image encoder answered something other than READY.  #1445: a card in the Exclusive_Process
     compute mode (or one another process holds) refuses the encoder's CUDA context with "busy or unavailable"; that
@@ -2092,37 +2085,8 @@ class Vision:
             except (IndexError, ValueError) as e:                # no comma, or not base64
                 raise ValueError(f"the image's data: URL could not be read ({e})") from None
         if source.startswith(("http://", "https://")):
-            return Vision.download(source)
-        path = source[7:] if source.startswith("file://") else source
-        # refused before anything looks at the path: file://host/share/x.png is \\host\share\x.png ("file://C:/x.png",
-        # a drive, is a client's spelling of file:///C:/x.png)
-        host = re.split(r"[/\\]", path, maxsplit=1)[0] if source.startswith("file://") else ""
-        if network_path(path) or host and not re.fullmatch(r"[A-Za-z]:|localhost", host, re.IGNORECASE):
-            raise ValueError("an image file must be on this computer: network paths (\\\\host\\share, //host/share, "
-                             "file://host/...) are not read")
-        if path and os.path.isfile(path):
-            try:
-                return Path(path).read_bytes()
-            except OSError as e:
-                raise ValueError(f"the image could not be read from {path} ({e})") from None
-        raise ValueError("an image must be a data: URL, an http(s) URL or a local file path")
-
-    @staticmethod
-    def download(url: str) -> bytes:
-        """An image URL's bytes, at most IMAGE_URL_MAX of them: the whole response was read, so a huge or endless one
-        filled the memory.  One that cannot be read is a ValueError (a 400 that says so), not a dropped connection."""
-        too_big = f"the image URL's file is over {IMAGE_URL_MAX >> 20} MiB"
-        try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "strata"}), timeout=60) as r:
-                size = r.headers.get("Content-Length") or ""
-                if size.isdigit() and int(size) > IMAGE_URL_MAX:
-                    raise ValueError(too_big)
-                data = r.read(IMAGE_URL_MAX + 1)
-        except (OSError, HTTPException) as e:
-            raise ValueError(f"the image URL could not be read: {e}") from None
-        if len(data) > IMAGE_URL_MAX:
-            raise ValueError(too_big)
-        return data
+            raise ValueError("image URLs are not fetched; send the image as a data: URL")
+        raise ValueError("an image must be a data: URL (image URLs and local files are not read)")
 
     @staticmethod
     def _exif_rotated(data: bytes) -> bool:
@@ -3434,7 +3398,6 @@ class Service:
         Clients resend the whole history every turn, so one unreadable tool picture would fail every later request of
         the conversation; a picture the user sends keeps the 400.  A picture that encodes stays in the cache, so the
         prompt's own encode below finds it."""
-        fetched = {}                     # a URL's bytes, so prepare() does not download the same picture again
         for m in messages:
             content = m.get("content")
             if m.get("role") != "tool" or not isinstance(content, list):
@@ -3446,8 +3409,6 @@ class Service:
                 if why is None:
                     src = item["source"]
                     try:
-                        if src.startswith(("http://", "https://")):
-                            src = fetched[item["source"]] = Vision.download(src)   # outside the FIFO, as in prepare()
                         with self.fifo:          # the encoder takes its turn with the requests (see below)
                             self.vision.encode(src)
                     except (ValueError, OSError) as e:
@@ -3455,13 +3416,12 @@ class Service:
                 if why is not None:
                     print(f"[strata] a picture a tool returned was left out of the prompt: {why}", flush=True)
                     content[n] = {"type": "text", "text": f"[image omitted: {why}]"}
-        return fetched
 
     def prepare(self, messages, tools, kwargs, max_new=None, force=None, req=None):
         """-> (ids, thinking, max_new). An unset or non-positive max_new (some clients send -1) means "unlimited":
         the rest of the context.  `force` (forced_call): without thinking the reply starts with it, so it ends the
         prompt; with thinking, Service.run writes it once the thinking is over."""
-        fetched = self._note_unreadable_tool_images(messages)
+        self._note_unreadable_tool_images(messages)
         ids = self.encode_prompt(messages, tools, kwargs)
         if force and kwargs.get("enable_thinking", True) is False:
             ids = ids + self.tok.encode(force, parse_special=True)
@@ -3473,10 +3433,7 @@ class Service:
                                  "'vision'), so it cannot read images")
             pad = self.tok.encode(IMAGE_PAD, parse_special=True)[0]
             start = self.tok.encode(VISION_START, parse_special=True)[0]
-            # An image URL is downloaded first, outside the FIFO: under it, a slow server held every other request
-            # for as long as urlopen waited.
-            images = [fetched[src] if src in fetched else Vision.download(src) if src.startswith(("http://", "https://"))
-                      else src for src in images]
+            images = list(images)
             # Encode only while the engine is idle: the engine and the image encoder (a separate process) must not
             # run on the GPU at the same time - an encode during a running request left that request stuck at
             # "reading the prompt" with CPU and GPU busy, for good (reproduced).  So encoding takes its turn in the
@@ -3687,35 +3644,21 @@ class Service:
                 print(f"[strata] thinking capped at {max_new - reserve} of max_tokens {max_new} to leave room for "
                       f"the answer (budget {budget})", flush=True)
                 budget = max(1, max_new - reserve)
-        parser = OutputParser(thinking=thinking, tools=tools, stream_tools=True, recover=self.tool_call_recovery)
-        detok, n, finish = Detokenizer(self.tok), 0, "length"
+        # libstrata_text's C++ output side when the library is there (STRATA_PY_TOKENIZER=1: the Python classes)
+        parser = native_stream.new_output_parser(thinking=thinking, tools=tools, stream_tools=True,
+                                                 recover=self.tool_call_recovery)
+        detok, n, finish = native_stream.new_detokenizer(self.tok, Detokenizer), 0, "length"
         run_tok, run_len, repeated = None, 0, False     # #606: the current run of one repeated token
         thinking_n = 0                                  # tokens written while thinking (Responses' reasoning_tokens)
         stop_list = stop_strings(sampling)
-        stops = StopMatcher(stop_list) if stop_list else None
+        stops = native_stream.new_stop_matcher(stop_list, StopMatcher) if stop_list else None
 
-        def cut(evs):
-            """The events with the answer's text cut at a stop string (OpenAI stop, Anthropic stop_sequences)."""
-            if stops is None:
-                return evs
-            out = []
-            for ev in evs:
-                if stops.hit is not None:
-                    break                               # nothing after the stop string is sent
-                if ev.kind == "content":
-                    text = stops.push(ev.text or "")
-                    if text:
-                        out.append(Event("content", text))
-                    continue
-                held = stops.flush()                    # a stop string does not run across a tool call or thinking
-                if held:
-                    out.append(Event("content", held))
-                out.append(ev)
-            return out
+        pipe = native_stream.new_pipe(self.tok, parser, detok, stops)   # detok -> parser -> cut at the stops
+        cut = pipe.cut
         opening = []                                    # without thinking the prompt ends with the forced opening:
         if force and not thinking:                      # the parser reads it as if the model had written it
             opening, force = parser.feed(force), None
-        tail = ""                                       # the last characters written (the newlines before a call)
+            pipe.sync()
         answered, close_retried = False, False          # #1053: content or a call came out; the thinking was closed
         nf_retried = False                              # #879: the request was sent again after non-finite logits
         timings, before = None, None                    # this request's timings; the engine's `last` before it
@@ -3829,8 +3772,9 @@ class Service:
                                 if trace is not None and trace["first_token_s"] is None:
                                     with self.status_lock:
                                         trace["first_token_s"] = round(time.perf_counter() - trace["_clock"], 3)
+                                fl = pipe.fl
                                 if t in self.stop_ids:
-                                    if force and parser.state == "reasoning" and parser.buf == THINK_END:
+                                    if force and not fl & 7 and fl & NS_THINK_END:
                                         opens = True    # #537: the held </think> was the end: the call opens there
                                         break
                                     finish = "stop"
@@ -3838,15 +3782,14 @@ class Service:
                                     break
                                 raw_ids.append(t)
                                 seg.append(t)
-                                thinking_n += parser.state in ("reasoning", "rcall")
+                                thinking_n += (fl & NS_THINKING) != 0
                                 run_len = run_len + 1 if t == run_tok else 1
                                 run_tok = t
                                 if self.repeat_stop_tokens and run_len >= self.repeat_stop_tokens:
                                     repeated = True     # #606: a degenerate output, not an answer: end it here
                                     break
-                                piece = detok.push(t)
-                                tail = (tail + piece)[-2:]
-                                evs = cut(parser.feed(piece))
+                                evs = pipe.step(t)
+                                fl = pipe.fl
                                 self._note(n, evs, st, rate)
                                 last_print = self._progress(last_print, st=st)
                                 for ev in evs:
@@ -3860,14 +3803,14 @@ class Service:
                                 elif time.perf_counter() - last_out >= KEEPALIVE_S:
                                     last_out = time.perf_counter()
                                     yield "ping", None
-                                if stops is not None and stops.hit is not None:
+                                if fl & NS_HIT:
                                     finish = "stop"         # gen.close() below STOPs the engine, as for a stop token
                                     break
-                                if (self.reasoning_loop_recovery and not recovery_count and parser.state == "reasoning"
-                                        and n >= next_loop_check and not parser.buf and not parser.pending
-                                        and not detok.pending()):
+                                if (self.reasoning_loop_recovery and not recovery_count and not fl & 7
+                                        and n >= next_loop_check and not fl & (NS_BUF | NS_PENDING | NS_DETOK)):
                                     next_loop_check = n + LOOP_CHECK_EVERY
-                                    repeat_coverage = reasoning_repeat_coverage(reasoning_text)
+                                    repeat_coverage = (native_stream.repeat_coverage if native_stream.enabled()
+                                                       else reasoning_repeat_coverage)(reasoning_text)
                                     if repeat_coverage >= LOOP_COVERAGE:
                                         if self.reasoning_loop_recovery == "stop":
                                             looped = True        # #728: end the reply here, as for a repeated token
@@ -3876,16 +3819,16 @@ class Service:
                                             recover_prompt = focused_recovery_prompt(self.tok, ids, raw_ids)
                                             if recover_prompt is not None:
                                                 break
-                                if budget and parser.state == "reasoning":
+                                if budget and not fl & 7:
                                     thought += 1
                                     # at a clean point: no tag held back, no character split across tokens
-                                    if thought >= budget and not parser.buf and not detok.pending():
+                                    if thought >= budget and not fl & (NS_BUF | NS_DETOK):
                                         wrap = True
                                         break
                                 if force:
                                     if any(ev.kind in ("tool_start", "tool_call") for ev in evs):
                                         force = None    # the model is writing a call of its own
-                                    elif parser.state == "content" and not parser.buf and not detok.pending():
+                                    elif (fl & (7 | NS_BUF | NS_DETOK)) == 1:
                                         opens = True
                                         break
                         except EngineNonFinite:
@@ -3970,8 +3913,8 @@ class Service:
                                 for t in extra:
                                     n += 1
                                     raw_ids.append(t)
-                                    thinking_n += parser.state in ("reasoning", "rcall")
-                                    evs = cut(parser.feed(detok.push(t)))
+                                    thinking_n += (pipe.fl & NS_THINKING) != 0
+                                    evs = pipe.step(t, False)
                                     self._note(n, evs, st, rate)
                                     for ev in evs:
                                         yield "event", ev
@@ -3989,6 +3932,7 @@ class Service:
                             budget = st["thinking_budget"] = None
                             text = REASONING_WRAP_UP + (force or "")
                         else:
+                            tail = pipe.tail                  # the last characters written (the newlines before a call)
                             text = "\n" * (2 - (len(tail) - len(tail.rstrip("\n")))) + force
                         force = None
                         extra = self.tok.encode(text, parse_special=True)
@@ -4000,8 +3944,8 @@ class Service:
                         for t in extra:
                             n += 1
                             raw_ids.append(t)
-                            thinking_n += parser.state in ("reasoning", "rcall")
-                            evs = cut(parser.feed(detok.push(t)))
+                            thinking_n += (pipe.fl & NS_THINKING) != 0
+                            evs = pipe.step(t, False)
                             self._note(n, evs, st, rate)
                             for ev in evs:
                                 yield "event", ev
@@ -5255,18 +5199,6 @@ def make_handler(svc: Service):
             return bool(origin) and origin.split("://", 1)[-1] != self.headers.get("Host", "") and \
                 origin not in svc.trusted_origins
 
-        def _no_local_images(self, messages):
-            """A web page of another origin must not have a file on this computer read as an image.  Without an
-            api_key, _foreign_page refuses such a page unless cors_origins lets it in - and a page cors_origins lets
-            in (["*"]: every page) could name any file and, CORS allowing, read what the model says about it.  data:
-            and http(s) images are the page's own to send; files come from Strata's own page, a trusted origin or a
-            client that is no browser.  ValueError (a 400)."""
-            if self._foreign_origin() and any(not src.startswith(("data:", "http://", "https://"))
-                                              for src in images_of(messages)):
-                raise ValueError("a web page of another origin cannot have a file on this computer read as an "
-                                 "image: send it as a data: URL (or add the page's origin to the config's "
-                                 "trusted_origins)")
-
         def _settings(self):
             # They change what every client gets, so only the app's own page may set them
             body = self._body()
@@ -5339,7 +5271,6 @@ def make_handler(svc: Service):
             req = svc.with_shared(req, "openai")
             bias_api.normalize(req.get("logit_bias"), len(getattr(svc.tok, "tokens", ())) or None)
             messages, tools, kw = openai_to_messages(req)
-            self._no_local_images(messages)
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # as the Responses route: no tools are offered
                 tools = None
             force = forced_call(req.get("tool_choice"), tools)      # a bad value is a 400 before anything is sent
@@ -5512,10 +5443,6 @@ def make_handler(svc: Service):
             tools, names, skipped = responses_api.request_tools(req)
             kw = responses_api.template_kwargs(req, svc.shared)
             try:
-                self._no_local_images(messages)              # as on the chat route: no file read for a foreign page
-            except ValueError as e:
-                raise ResponsesError(str(e), "input") from None
-            try:
                 messages, validator = prepare_format(responses_api.text_format(req), messages, with_tools=bool(tools))
             except ValueError as e:
                 raise ResponsesError(str(e).replace("response_format", "text.format"), "text.format") from None
@@ -5577,7 +5504,6 @@ def make_handler(svc: Service):
             svc.load()
             req = svc.with_shared(req, "anthropic")
             messages, tools, kw = anthropic_to_messages(req, svc.anthropic_think_unasked)
-            self._no_local_images(messages)
             if tool_choice_of(req.get("tool_choice"))[0] == "none":   # Anthropic's {"type": "none"}: no tools offered
                 tools = None
             force = forced_call(req.get("tool_choice"), tools)        # "any" / {"type": "tool", "name": N}
@@ -6202,14 +6128,26 @@ def main() -> int:
     if a.engine == "strata" and not (tpath / "vocab.json").exists():
         ap.error(f"the model's tokenizer is missing ({tpath / 'vocab.json'}); run setup again")
     if (tpath / "vocab.json").exists():
-        import strata_tokenizer as ST
-        vocab = json.loads((tpath / "vocab.json").read_text(encoding="utf-8"))
-        tokens = [None] * len(vocab)
-        for t, i in vocab.items():
-            tokens[i] = t
-        merges = (tpath / "merges.txt").read_text(encoding="utf-8").split("\n")
-        types = json.loads((tpath / "token_type.json").read_text())
-        tok = ST.Tokenizer(tokens, merges, types)
+        if os.environ.get("STRATA_PY_TOKENIZER") == "1":       # tests / development: the pure-Python tokenizer
+            import strata_tokenizer as ST
+            vocab = json.loads((tpath / "vocab.json").read_text(encoding="utf-8"))
+            tokens = [None] * len(vocab)
+            for t, i in vocab.items():
+                tokens[i] = t
+            merges = (tpath / "merges.txt").read_text(encoding="utf-8").split("\n")
+            types = json.loads((tpath / "token_type.json").read_text())
+            tok = ST.Tokenizer(tokens, merges, types)
+        else:
+            from serve.native_text import NativeTextError, NativeTokenizer
+            exe_hint = cfg.get("exe")
+            if exe_hint and not os.path.isabs(exe_hint):
+                exe_hint = os.path.join(cfg.get("cwd") or ".", exe_hint)
+            try:
+                tok = NativeTokenizer(tpath, engine_exe=exe_hint)
+            except NativeTextError as e:
+                raise SystemExit(f"[strata] the native tokenizer is unavailable: {e}\n"
+                                 f"[strata] set STRATA_TEXT_LIB to libstrata_text, put it beside the engine, or "
+                                 f"set STRATA_PY_TOKENIZER=1 to use the slow Python tokenizer")
     hub = hub_from_config(cfg, a.mcp_config)            # before the minutes of loading: a bad entry stops here
     if a.engine == "strata":
         if not cfg:

@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "shards": [
+    {
+      "name": "model.gguf",
+      "size": 10688
+    }
+  ],
+  "native_experts_sha256": "74bdc5ffe4026dd64ed99e3b21aeb0f17784e22e583561c3d3222c11bbf833c6",
+  "bytes": 3264
+}

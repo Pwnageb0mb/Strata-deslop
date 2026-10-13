@@ -98,17 +98,15 @@ def install(ram, found, argv, answers=None, extra=(), avx512=False, configs=()):
             mock.patch.object(setup, "load_settings", lambda: {}),
             mock.patch.object(setup, "save_settings", lambda s: None),
             mock.patch.object(setup, "gpus", lambda: found),
-            mock.patch.object(setup, "amd_gpus", lambda: []),
             mock.patch.object(setup, "ram_gb", lambda: ram),
             mock.patch.object(setup, "cpu_info", lambda: ("Test CPU", True, avx512)),
             mock.patch.object(setup, "cpu_cores", lambda: None),   # #642: not a hybrid CPU
-            mock.patch.object(setup, "page_file_gb", lambda: 16.0),
             mock.patch.object(setup, "is_wsl", lambda: False),
             mock.patch.object(setup, "rotational_disk", lambda p: None),   # #605: the test PC's own disk
             mock.patch.object(setup, "free_gb", lambda p: 900.0),
             mock.patch.object(setup, "pip_install", lambda *a, **k: None),
             mock.patch.object(setup, "get_llama_cpp", lambda: t / "llama.cpp"),
-            mock.patch.object(setup, "get_prebuilt", lambda *a, **k: eng),
+            mock.patch.object(setup, "build_engine", lambda *a, **k: eng),
             mock.patch.object(setup, "update_installed_engine", lambda *a, **k: None),
             mock.patch.object(setup, "download", fake_download),
             mock.patch.object(setup, "check_shards", lambda shards: None),

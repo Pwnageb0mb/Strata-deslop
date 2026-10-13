@@ -1,0 +1,166 @@
+# eviction golden: tools/make_profile.py + tools/bench_eviction.py over committed fixtures
+# the trace record: <int32 layer><int32 k><k int32 ids><k float32 weights>
+n_layers 48
+n_expert 512
+trace trace-1.bin
+trace trace-2.bin
+base base.bin
+base_ranked 10,10 10,11 11,5
+freq 0 3 3
+freq 0 7 2
+freq 1 0 1
+freq 1 1 1
+freq 1 2 1
+freq 1 5 1
+freq 2 0 2
+freq 2 511 1
+freq 5 2 1
+freq 47 1 1
+codes 0,3 0,7 0,7 0,3 1,0 1,1 1,2 1,5 2,511 2,0 47,1 0,3 5,2 2,0
+profile default bytes 196632 sha256 d471f5eaf91d4ffa879a472452abe4e5d4aa8c8b47a0448989c82e40f1a3ddef
+profile_head default 10,10 10,11 11,5 0,3 0,7 2,0 1,0 1,1 1,2 1,5 2,511 5,2
+profile_tail default 44,511 45,511 46,511 47,511
+profile_count default 24576
+profile reorder bytes 196632 sha256 f70656a0cdf9335daa3cf25b28ec9c44b92373c0f0f6db66213979ead680b7fa
+profile_head reorder 0,3 0,7 2,0 1,0 1,1 1,2 1,5 2,511 5,2 47,1 10,10 10,11
+profile_tail reorder 44,511 45,511 46,511 47,511
+profile_count reorder 24576
+profile nobase bytes 196632 sha256 94123dedf432a04113ea77e35fddc1f31bf1a2ff278ffa4979bdf2085387b6c7
+profile_head nobase 0,3 0,7 2,0 1,0 1,1 1,2 1,5 2,511 5,2 47,1 0,0 3,0
+profile_tail nobase 44,511 45,511 46,511 47,511
+profile_count nobase 24576
+summary 14 lookups, 10 distinct (layer, expert) pairs
+mix weighted specs trace-1.bin:2.0 trace-2.bin:0 trace-empty.bin bytes 196632 sha256 f2985a5f1a59b7638a34cfdcb17b4c3e4eda136769ecdc4b0723ffa4aa0be1a2 count 24576
+mix_head weighted 0,3 0,7 1,0 1,1 1,2 1,5 2,0 2,511 47,1 5,2 0,0 3,0
+mix_tail weighted 44,511 45,511 46,511 47,511
+mix_stdout weighted 24576 ranked pairs, 10 from 3 traces
+mix_skipped weighted 1
+mix plain specs trace-1.bin trace-2.bin bytes 196632 sha256 2d6e3142d151759de6b07612547736dd727a4daac54bbb74a3d9fa1127f0ac63 count 24576
+mix_head plain 0,3 2,0 5,2 0,7 1,0 1,1 1,2 1,5 2,511 47,1 0,0 3,0
+mix_tail plain 44,511 45,511 46,511 47,511
+mix_stdout plain 24576 ranked pairs, 10 from 2 traces
+mix_skipped plain 0
+cfg global-tight slots 4,8
+cfg global-tight per_layer 0
+cfg global-tight policies fill-only,lru,lfu-decay,oracle
+cfg global-tight windows 4
+cfg global-tight decay_window 65536
+cfg global-tight prefill 0
+cfg perlayer slots 4105,96
+cfg perlayer per_layer 1
+cfg perlayer policies fill-only,lru,lfu-decay,oracle
+cfg perlayer windows 1
+cfg perlayer decay_window 65536
+cfg perlayer prefill 0
+cfg prefill-decay slots 4105
+cfg prefill-decay per_layer 0
+cfg prefill-decay policies fill-only,lru,lfu-decay
+cfg prefill-decay windows 1
+cfg prefill-decay decay_window 4
+cfg prefill-decay prefill 1
+# report-begin global-tight
+
+slots = 4
+  policy           hits    lookups  hit-rate  evictions
+  fill-only           3         14    0.2143          0
+  lru                 3         14    0.2143          7
+  lfu-decay           3         14    0.2143          7
+  oracle              4         14    0.2857          6
+  per-window hit-rate (4 windows, in trace order):
+  policy           w1       w2       w3       w4
+  fill-only    0.5000   0.0000   0.0000   0.3333
+  lru          0.5000   0.0000   0.0000   0.3333
+  lfu-decay    0.5000   0.0000   0.0000   0.3333
+  oracle       0.5000   0.0000   0.0000   0.6667
+
+slots = 8
+  policy           hits    lookups  hit-rate  evictions
+  fill-only           4         14    0.2857          0
+  lru                 4         14    0.2857          2
+  lfu-decay           4         14    0.2857          2
+  oracle              4         14    0.2857          2
+  per-window hit-rate (4 windows, in trace order):
+  policy           w1       w2       w3       w4
+  fill-only    0.5000   0.0000   0.0000   0.6667
+  lru          0.5000   0.0000   0.0000   0.6667
+  lfu-decay    0.5000   0.0000   0.0000   0.6667
+  oracle       0.5000   0.0000   0.0000   0.6667
+# csv-begin global-tight
+slots,scope,policy,window,lookups,hits,hit_rate,evictions
+4,global,fill-only,all,14,3,0.2143,0
+4,global,fill-only,w1,4,2,0.5000,
+4,global,fill-only,w2,3,0,0.0000,
+4,global,fill-only,w3,4,0,0.0000,
+4,global,fill-only,w4,3,1,0.3333,
+4,global,lru,all,14,3,0.2143,7
+4,global,lru,w1,4,2,0.5000,
+4,global,lru,w2,3,0,0.0000,
+4,global,lru,w3,4,0,0.0000,
+4,global,lru,w4,3,1,0.3333,
+4,global,lfu-decay,all,14,3,0.2143,7
+4,global,lfu-decay,w1,4,2,0.5000,
+4,global,lfu-decay,w2,3,0,0.0000,
+4,global,lfu-decay,w3,4,0,0.0000,
+4,global,lfu-decay,w4,3,1,0.3333,
+4,global,oracle,all,14,4,0.2857,6
+4,global,oracle,w1,4,2,0.5000,
+4,global,oracle,w2,3,0,0.0000,
+4,global,oracle,w3,4,0,0.0000,
+4,global,oracle,w4,3,2,0.6667,
+8,global,fill-only,all,14,4,0.2857,0
+8,global,fill-only,w1,4,2,0.5000,
+8,global,fill-only,w2,3,0,0.0000,
+8,global,fill-only,w3,4,0,0.0000,
+8,global,fill-only,w4,3,2,0.6667,
+8,global,lru,all,14,4,0.2857,2
+8,global,lru,w1,4,2,0.5000,
+8,global,lru,w2,3,0,0.0000,
+8,global,lru,w3,4,0,0.0000,
+8,global,lru,w4,3,2,0.6667,
+8,global,lfu-decay,all,14,4,0.2857,2
+8,global,lfu-decay,w1,4,2,0.5000,
+8,global,lfu-decay,w2,3,0,0.0000,
+8,global,lfu-decay,w3,4,0,0.0000,
+8,global,lfu-decay,w4,3,2,0.6667,
+8,global,oracle,all,14,4,0.2857,2
+8,global,oracle,w1,4,2,0.5000,
+8,global,oracle,w2,3,0,0.0000,
+8,global,oracle,w3,4,0,0.0000,
+8,global,oracle,w4,3,2,0.6667,
+# report-begin perlayer
+
+slots = 4105
+  policy           hits    lookups  hit-rate  evictions
+  fill-only           4         14    0.2857          0
+  lru                 4         14    0.2857          0
+  lfu-decay           4         14    0.2857          0
+  oracle              4         14    0.2857          0
+
+slots = 96
+  policy           hits    lookups  hit-rate  evictions
+  fill-only           4         14    0.2857          0
+  lru                 4         14    0.2857          2
+  lfu-decay           4         14    0.2857          2
+  oracle              4         14    0.2857          2
+# csv-begin perlayer
+slots,scope,policy,window,lookups,hits,hit_rate,evictions
+4105,per-layer,fill-only,all,14,4,0.2857,0
+4105,per-layer,lru,all,14,4,0.2857,0
+4105,per-layer,lfu-decay,all,14,4,0.2857,0
+4105,per-layer,oracle,all,14,4,0.2857,0
+96,per-layer,fill-only,all,14,4,0.2857,0
+96,per-layer,lru,all,14,4,0.2857,2
+96,per-layer,lfu-decay,all,14,4,0.2857,2
+96,per-layer,oracle,all,14,4,0.2857,2
+# report-begin prefill-decay
+
+slots = 4105
+  policy           hits    lookups  hit-rate  evictions
+  fill-only           4         14    0.2857          0
+  lru                 4         14    0.2857          0
+  lfu-decay           4         14    0.2857          0
+# csv-begin prefill-decay
+slots,scope,policy,window,lookups,hits,hit_rate,evictions
+4105,global,fill-only,all,14,4,0.2857,0
+4105,global,lru,all,14,4,0.2857,0
+4105,global,lfu-decay,all,14,4,0.2857,0

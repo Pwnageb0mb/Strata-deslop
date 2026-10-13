@@ -168,59 +168,31 @@ class Client(unittest.TestCase):
         self.assertTrue(any("cancelled" in e for e in seen), seen)   # notifications/cancelled reached the server
 
 
-class HttpClient(unittest.TestCase):
-    """Streamable HTTP: JSON answers, an event-stream answer, the session id."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.httpd = fake.http_server(0)
-        url = f"http://127.0.0.1:{cls.httpd.server_address[1]}/mcp"
-        cls.hub = McpHub({"web": {"url": url}, "down": {"url": "http://127.0.0.1:9/mcp"}}, {"timeout_s": 1.5})
-        cls.hub.start(wait=True)
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.hub.close()
-        cls.httpd.shutdown()
-        cls.httpd.server_close()
-
-    def test_list_and_call(self):
-        s = self.hub.servers["web"]
-        self.assertEqual(s.status, "ready", s.error)
-        self.assertEqual(len(s.tools), len(fake.TOOLS))             # pages, with the session id on each request
-        self.assertEqual(s.transport.session, "s-1")
-        self.hub.routes()
-        self.assertEqual(self.hub.call("web__echo", {"text": "over http"})["text"], "over http")   # event stream
-        self.assertEqual(self.hub.call("web__fail", {})["text"], "error: it failed on purpose")
-
-    def test_timeout_and_unreachable(self):
-        self.hub.routes()
-        r = self.hub.call("web__sleep", {"seconds": 4})
-        self.assertIn("timed out", r["text"])
-        self.assertEqual(self.hub.servers["down"].status, "failed")
-        self.assertIn("could not reach", self.hub.servers["down"].error)
-
-
 class Config(unittest.TestCase):
     def test_both_spellings_and_the_file(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "claude_desktop_config.json")
-            Path(path).write_text(json.dumps({"mcpServers": {"b": {"url": "http://x/mcp"}, "a": stdio()}}),
-                                  encoding="utf-8")
+            Path(path).write_text(json.dumps({"mcpServers": {"b": stdio(), "a": stdio()}}), encoding="utf-8")
             hub = hub_from_config({"mcp_servers": {"a": {"command": "old"}},
                                    "mcpServers": {"c": stdio(), "off": {"command": "x", "disabled": True}},
                                    "mcp": {"timeout_s": 5, "max_result_chars": 100, "max_rounds": 3}}, path)
             self.assertEqual(sorted(hub.servers), ["a", "b", "c"])
             self.assertEqual(hub.servers["a"].cfg["command"], sys.executable)   # the file wins a name clash
-            self.assertEqual(hub.servers["b"].kind, "http")
+            self.assertEqual(hub.servers["b"].kind, "stdio")
             self.assertEqual((hub.settings["timeout_s"], hub.settings["max_result_chars"], hub.settings["max_rounds"]),
                              (5.0, 100, 3))
         self.assertIsNone(hub_from_config({}))
         self.assertEqual(McpHub({}).settings["max_result_chars"], 20000)
 
+    def test_a_url_server_is_refused(self):
+        with self.assertRaises(SystemExit) as ctx:
+            hub_from_config({"mcp_servers": {"web": {"url": "http://127.0.0.1:3000/mcp"}}})
+        self.assertIn("only stdio MCP servers (command) are supported", str(ctx.exception))
+        self.assertIn("HTTP transport was removed", str(ctx.exception))
+
     def test_bad_entries_stop_the_start(self):
         for cfg in ({"mcp_servers": {"x": {}}}, {"mcp_servers": {"x": {"command": "a", "args": "b"}}},
-                    {"mcp_servers": ["x"]}, {"mcpServers": {"x": {"url": "http://a", "type": "sse"}}},
+                    {"mcp_servers": ["x"]},
                     {"mcp_servers": {"x": {"command": "a"}}, "mcp": {"timeout_s": 0}},
                     {"mcp_servers": {"x": {"command": "a"}}, "mcp": {"max_rounds": 1.5}}):
             with self.subTest(cfg=cfg), self.assertRaises(SystemExit):

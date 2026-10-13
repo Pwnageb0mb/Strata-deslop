@@ -1,0 +1,11 @@
+{
+  "metadata": {
+    "format": "pt"
+  },
+  "weight_map": {
+    "language_model.model.embed_tokens.weight": "model-00001-of-00002.safetensors",
+    "language_model.model.ngram_embedding.weight_scale": "model-00002-of-00002.safetensors",
+    "language_model.model.ngram_embedding.shard_0.weight": "model-00003-of-00002.safetensors",
+    "language_model.model.ngram_embedding.shard_1.weight": "model-00004-of-00002.safetensors"
+  }
+}

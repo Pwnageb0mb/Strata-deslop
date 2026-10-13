@@ -2,6 +2,11 @@
 # first start (inside the container or on the /data volume).
 .git
 
+# The Dockerfile is not part of what the image runs.  Keeping it (and this file) out of the context means an
+# edit to either does not invalidate COPY . . below - and the ten-minute engine compile that follows it.
+Dockerfile
+.dockerignore
+
 # local Python environment (rebuilt in the image)
 .venv/
 __pycache__/
@@ -17,7 +22,6 @@ __pycache__/
 /mtp/
 /models/
 /Strata-data/
-third_party/llama.cpp/
 third_party/*.zip
 *.done
 *.log

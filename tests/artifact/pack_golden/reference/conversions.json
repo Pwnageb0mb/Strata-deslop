@@ -1,0 +1,63 @@
+{
+ "schema": 1,
+ "tool": "tools/iq_pack.py",
+ "compat_bf16": true,
+ "source_shards": [
+  {
+   "name": "model.gguf",
+   "size": 10688
+  }
+ ],
+ "tensors": [
+  {
+   "name": "blk.0.ffn_gate_inp.weight",
+   "shard": "model.gguf",
+   "src_type": "F32",
+   "dst_type": "BF16",
+   "method": "f32->bf16: the values are BF16's (low 16 bits zero)",
+   "exact": true,
+   "max_abs_err": 0.0,
+   "source_sha256": "4c3df70bb1a3b51caea92dc932184899aa38199485e27f4eb89026f3f13adce9"
+  },
+  {
+   "name": "blk.0.hc_attn_down.weight",
+   "shard": "model.gguf",
+   "src_type": "F32",
+   "dst_type": "BF16",
+   "method": "f32->bf16 round-to-nearest-even (--compat-bf16)",
+   "exact": false,
+   "max_abs_err": 0.0019377470016479492,
+   "source_sha256": "798b0189563db91b33b49e69f5407fb6845506aed58bfcc0d36bc819b3556492"
+  },
+  {
+   "name": "blk.0.ssm_alpha.weight",
+   "shard": "model.gguf",
+   "src_type": "Q8_0",
+   "dst_type": "BF16",
+   "method": "dequantize->bf16 round-to-nearest-even (--compat-bf16)",
+   "exact": false,
+   "max_abs_err": 0.00189208984375,
+   "source_sha256": "efcc9247cdd8b914cf6cbdde90eabd65861f5d5e1e965aea4dfa3f6d8af8ba8a"
+  },
+  {
+   "name": "blk.0.ple_conv1d.weight",
+   "shard": "model.gguf",
+   "src_type": "F32",
+   "dst_type": "F16",
+   "exact": false,
+   "max_abs_err": 0.0002422332763671875,
+   "method": "f32->f16 by the loader (index kind 3, round-to-nearest-even)",
+   "source_sha256": "798b0189563db91b33b49e69f5407fb6845506aed58bfcc0d36bc819b3556492"
+  },
+  {
+   "name": "blk.0.ple_norm_conv.weight",
+   "shard": "model.gguf",
+   "src_type": "F16",
+   "dst_type": "F32",
+   "method": "f16->f32 widening",
+   "exact": true,
+   "max_abs_err": 0.0,
+   "source_sha256": "6774bb4ef854372815ce57e589b8cf53d821421eb80e28cc495201f128e43b11"
+  }
+ ]
+}

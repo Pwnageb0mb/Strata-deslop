@@ -354,7 +354,7 @@ base's, then the rest.)
 All three are [ISTA-DASLab's GSQ-RCO quantizations](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF)
 of [Qwen3.8-Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next).
 
-| Model | Download | RAM it uses | Speed | Quality |
+| Model | Size | RAM it uses | Speed | Quality |
 | --- | ---: | ---: | --- | --- |
 | **Q2_0** | 66 GB | ~34 GB experts + ~6 GB | fastest | good |
 | **IQ2_XS** | 68 GB | ~36 GB experts + ~6 GB | close to Q2_0 | a bit better |
@@ -370,7 +370,7 @@ RCO on code, agentic and vision calibration data; its authors report 91.3% of th
 98.7% of LiveCodeBench v6. One size, named IQ1_M for its 1.89 bits per *original* parameter; the kept experts are
 stored like IQ3_S (IQ2_S-IQ4_XS gate/up, IQ4_NL/Q2_0 down). Shard 1 is 29.6 GB (experts: 23 GB of RAM), so it runs
 on **32 GB of RAM**, and at 262K on 64 GB. Its shard 2 and its vision encoder are the original's files: with the
-original installed, setup downloads only shard 1. Strata ships its expert profile (`data/expert-profile-coder.bin`,
+original installed, setup needs only shard 1 from you. Strata ships its expert profile (`data/expert-profile-coder.bin`,
 the shipped ranking mapped onto the kept experts through the release's `rco-allocation.txt`: 72% of the expert
 reads hit the GPU on a 12 GB card). Images work; the experimental speed projection loads and runs on it (it was made
 for the full model).
@@ -443,8 +443,7 @@ Windows, `build-essential` + CUDA on Ubuntu) and compiles the engine for your GP
 3. **How much context?** 8K to 256K tokens (it recommends one for your VRAM).
 4. **Images?** yes / no (see [Images](#images-vision)).
 
-Then it downloads and prepares everything (the model is 66-76 GB, so the first start takes a while; an interrupted
-download continues where it stopped) and **starts the model**: your browser opens `http://127.0.0.1:8080`, the Strata
+Then it prepares everything from the model files on disk (the model is 66-76 GB, so the first start takes a while) and **starts the model**: your browser opens `http://127.0.0.1:8080`, the Strata
 app. It has three tabs:
 - **Chat:** streaming answers, the model's thinking (folded away once it answers), code with a copy button, pictures when
   images are on, and sampling and thinking-level settings. Chats stay in your browser.
@@ -1322,8 +1321,7 @@ also paste as it is (key `"mcpServers"`):
 
 ```json
 "mcp_servers": {
-  "files": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\me\\Documents\\notes"]},
-  "search": {"url": "http://127.0.0.1:3000/mcp", "headers": {"Authorization": "Bearer ..."}}
+  "files": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\me\\Documents\\notes"]}
 },
 "mcp": {"timeout_s": 60, "max_result_chars": 20000, "max_rounds": 8}
 ```
@@ -1333,8 +1331,8 @@ with an `mcpServers` block; add it to the `serve/server.py` line of your run scr
 
 - **A program** (`command`, `args`, optional `env` and `cwd`) is started by Strata and spoken to over its
   stdin/stdout; `npx`, `uvx`, `python` and friends are found on `PATH` as usual (Node.js is needed for `npx`
-  servers). **An address** (`url`, optional `headers`) uses MCP's Streamable HTTP transport (the older SSE-only
-  transport is not supported). `"disabled": true` leaves an entry out.
+  servers). Only programs are supported: an entry with a `url` is refused at start (the HTTP transport was removed).
+  `"disabled": true` leaves an entry out.
 - The servers start with Strata, in the background; the server window says what each one offers
   (`MCP server 'files': 14 tools (...)`), or why it did not start - its tools are then left out and the chat works
   without them. The Monitor tab lists them, and the Sampling drawer has **Use tools from MCP servers** (on by
@@ -1405,7 +1403,7 @@ claude mcp add strata -- python C:\Users\you\Strata\tools\strata_mcp.py
 It has eight tools: status (the running model, what is installed, the hardware, a recommended size), the model
 list, install, start, stop, logs, a speed test, and connection settings for other apps.
 
-Install runs `setup.py` with `--yes` in the background. Before it downloads anything, it shows the plan and waits
+Install runs `setup.py` with `--yes` in the background. Before it installs anything, it shows the plan and waits
 for your OK. Start and stop work like the run scripts and the server's own unload. The MCP server only ends
 processes it started itself. It uses only Python's standard library, so it works before `.venv` exists.
 
@@ -1419,7 +1417,7 @@ The config snippets for every client, the tool arguments and the safety rules ar
 
 The model has a vision encoder: [`mmproj-Qwen3.8-Flash-Next-BF16.gguf`](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF)
 (0.9 GB, a 27-layer ViT plus the projector into the language model). It is **optional**: say yes when the setup asks
-"Images?", or run it again with `--vision gpu` (or `--vision cpu`). The setup downloads the encoder, builds a small
+"Images?", or run it again with `--vision gpu` (or `--vision cpu`). Setup does not download the encoder: put the file in the model folder yourself (or in `--gguf-dir`), and it builds a small
 helper (`strata-vision`, from llama.cpp's `mtmd` library) and adds it to your start script. Nothing else changes.
 
 | Encoder on | Time per picture | Cost |
@@ -1446,8 +1444,7 @@ and no minimum, because a larger minimum changes the image answers and costs enc
 example a Q8_0 one (llama.cpp's `convert_hf_to_gguf.py --mmproj --outtype q8_0` makes one): the encoder's library
 reads quantized weights, the file is smaller (590 MiB against 865 MiB for the BF16 one, from `llama-quantize
 mmproj-Qwen3.8-Flash-Next-BF16.gguf mmproj-Qwen3.8-Flash-Next-Q8_0.gguf Q8_0`), and on the CPU it uses less RAM
-(about 280 MiB less in the encoder) and can encode faster than BF16 at the default 300 tokens. Setup downloads the
-BF16 file, and a setup run again keeps a file of your own that still exists. **Recommended for `--vision cpu`.**
+(about 280 MiB less in the encoder) and can encode faster than BF16 at the default 300 tokens. Setup uses the BF16 file from the model folder (it never downloads it), and a setup run again keeps a file of your own that still exists. **Recommended for `--vision cpu`.**
 Accuracy against BF16, per image token: the cosine of the embeddings is 0.997-0.999 on average (#625's report, with
 a community Q8_0 file, at 300, 768 and 1,024 tokens), and 0.9988 and 0.9987 on two pictures with the file made by
 the command above (300 tokens; the worst single token 0.94-0.96). Encode time above 768 tokens is the same as BF16's
@@ -1485,7 +1482,7 @@ you> /image C:\Users\me\Pictures\receipt.jpg
 you> What is the total on this receipt?
 ```
 
-**OpenAI API** (an `image_url` part: a `data:` URL, an `http(s)://` URL or a local file path):
+**OpenAI API** (an `image_url` part: a `data:` URL):
 
 ```python
 import base64
@@ -1498,7 +1495,9 @@ r = client.chat.completions.create(model="strata", messages=[{"role": "user", "c
 print(r.choices[0].message.content)
 ```
 
-**Anthropic API:** an `image` block with a `base64` (or `url`) source, as usual.
+**Anthropic API:** an `image` block with a `base64` source, as usual.
+
+Only `data:` URLs are read. The server does not fetch an `http(s)://` URL and does not read a local file path, so send the picture as base64 in a `data:` URL.
 
 JPEG, PNG, BMP, GIF, WebP, TIFF and AVIF work (the last ones are converted to PNG first; agents such as omp send
 WebP). Chat apps with image upload work the same way.

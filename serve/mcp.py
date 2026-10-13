@@ -2,9 +2,9 @@
 
 The user lists servers in the run config (`"mcp_servers"`, or Claude Desktop's `"mcpServers"` block pasted as is) or
 in a separate file (`--mcp-config`).  Each one is either a program Strata starts (`command`, `args`, `env`, `cwd`:
-the stdio transport, newline-delimited JSON-RPC 2.0 on its stdin/stdout) or an address (`url`, `headers`: the
-Streamable HTTP transport, JSON-RPC POSTed, answered as JSON or as an event stream).  Both are implemented here with
-the standard library only; no MCP SDK is needed.
+the stdio transport, newline-delimited JSON-RPC 2.0 on its stdin/stdout).  Only stdio is supported: an entry with a
+`url` is refused at config load (the HTTP transport was removed).  Stdio is implemented here with the standard
+library only; no MCP SDK is needed.
 
 `McpHub` owns every configured server: it starts them in the background when the server starts, offers their tools to
 the model as OpenAI function tools named `<server>__<tool>` (two servers may both have a `search`), and routes a call
@@ -28,8 +28,6 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 
 from serve.winjob import contain
 
@@ -248,141 +246,13 @@ class StdioTransport:
             pass
 
 
-class HttpTransport:
-    """A server at an address (Streamable HTTP): every message is a POST; the answer is JSON or an event stream that
-    carries it.  The session id the server hands out at `initialize` rides on every later request."""
-    kind = "http"
-
-    def __init__(self, name: str, cfg: dict):
-        self.name, self.url = name, str(cfg["url"])
-        self.headers = {str(k): str(v) for k, v in (cfg.get("headers") or {}).items()}
-        self.session = None
-        self.protocol = None                             # sent as MCP-Protocol-Version once negotiated
-        self.next_id = 0
-        self.lock = threading.Lock()
-        self.broken = None
-
-    def start(self):
-        pass
-
-    def alive(self) -> bool:
-        return self.broken is None
-
-    def _headers(self) -> dict:
-        h = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream",
-             "User-Agent": "strata", **self.headers}
-        if self.session:
-            h["Mcp-Session-Id"] = self.session
-        if self.protocol:
-            h["MCP-Protocol-Version"] = self.protocol
-        return h
-
-    def _post(self, msg: dict, rid, timeout: float, slot: _Slot | None):
-        try:
-            req = urllib.request.Request(self.url, data=json.dumps(msg, ensure_ascii=False).encode("utf-8"),
-                                         headers=self._headers(), method="POST")
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                if r.headers.get("Mcp-Session-Id"):
-                    self.session = r.headers["Mcp-Session-Id"]
-                if slot is None:                         # a notification: 202, nothing to read
-                    return
-                ctype = r.headers.get("Content-Type", "")
-                if "text/event-stream" in ctype:
-                    found = self._from_events(r, rid)
-                else:
-                    body = r.read()
-                    found = None
-                    parsed = json.loads(body) if body.strip() else None
-                    for m in parsed if isinstance(parsed, list) else [parsed]:
-                        if isinstance(m, dict) and m.get("id") == rid and "method" not in m:
-                            found = m
-                if found is None:
-                    raise McpError("the server's answer did not contain a response")
-                slot.msg = found
-        except urllib.error.HTTPError as e:
-            detail = ""
-            try:
-                detail = e.read().decode("utf-8", "replace")[:300]
-            except OSError:
-                pass
-            if e.code == 404 and self.session:           # the session expired: a restart starts a new one
-                self.broken = McpError("the server ended the session")
-            err = McpError(f"HTTP {e.code} {e.reason}{': ' + detail if detail else ''}")
-            if slot is None:
-                raise err from None
-            slot.error = err
-        except (OSError, ValueError, McpError) as e:
-            err = e if isinstance(e, McpError) else McpError(f"could not reach {self.url}: {e}")
-            if slot is None:
-                raise err from None
-            slot.error = err
-        finally:
-            if slot is not None:
-                slot.done.set()
-
-    @staticmethod
-    def _from_events(r, rid):
-        """Read the event stream until the event that answers `rid` (it may carry notifications first)."""
-        data = []
-        for raw in r:
-            line = raw.decode("utf-8", "replace").rstrip("\r\n")
-            if line.startswith("data:"):
-                data.append(line[5:].lstrip(" "))
-            elif not line and data:
-                try:
-                    m = json.loads("\n".join(data))
-                except ValueError:
-                    m = None
-                data = []
-                for x in m if isinstance(m, list) else [m]:
-                    if isinstance(x, dict) and x.get("id") == rid and "method" not in x:
-                        return x
-        return None
-
-    def request(self, method: str, params: dict, timeout: float, cancel=None):
-        if self.broken:
-            raise self.broken
-        with self.lock:
-            self.next_id += 1
-            rid = self.next_id
-        slot = _Slot()
-        # the POST runs on its own thread so the stop button and the deadline are noticed while it waits
-        threading.Thread(target=self._post, args=({"jsonrpc": "2.0", "id": rid, "method": method, "params": params},
-                                                  rid, timeout + 5, slot), daemon=True).start()
-        try:
-            return _wait(slot, timeout, cancel, method)
-        except (McpTimeout, McpCancelled) as e:
-            threading.Thread(target=self._quiet_notify, args=("notifications/cancelled",
-                                                              {"requestId": rid, "reason": str(e)}), daemon=True).start()
-            raise
-
-    def _quiet_notify(self, method, params):
-        try:
-            self.notify(method, params)
-        except McpError:
-            pass
-
-    def notify(self, method: str, params: dict | None = None):
-        self._post({"jsonrpc": "2.0", "method": method, **({"params": params} if params is not None else {})},
-                   None, 10, None)
-
-    def close(self):
-        if not self.session:
-            return
-        try:                                             # end the session on the server (it may not allow that)
-            req = urllib.request.Request(self.url, headers=self._headers(), method="DELETE")
-            urllib.request.urlopen(req, timeout=3).close()
-        except (OSError, ValueError):
-            pass
-
-
 # ------------------------------------------------------------------------------------------------ one server
 class McpServer:
     """One configured server: started once (and again after it stopped), with the tools it listed."""
 
     def __init__(self, name: str, cfg: dict, settings: dict):
         self.name, self.cfg, self.settings = name, cfg, settings
-        self.kind = "http" if cfg.get("url") else "stdio"
+        self.kind = "stdio"
         self.status = "idle"             # idle -> starting -> ready | failed; ready -> stopped when it ends
         self.error = None
         self.tools: list[dict] = []
@@ -399,7 +269,7 @@ class McpServer:
         if self.transport is not None:
             self.transport.close()
         self.status, self.error, self.last_start = "starting", None, time.monotonic()
-        t = HttpTransport(self.name, self.cfg) if self.kind == "http" else StdioTransport(self.name, self.cfg)
+        t = StdioTransport(self.name, self.cfg)
         self.transport = t
         timeout = float(self.settings["start_timeout_s"])
         try:
@@ -600,16 +470,12 @@ class McpHub:
 # ------------------------------------------------------------------------------------------------ config
 def _check_server(name, cfg, where) -> dict:
     if not isinstance(cfg, dict):
-        raise SystemExit(f"[strata] {where}: MCP server {name!r} must be an object with \"command\" or \"url\"")
-    if cfg.get("url"):
-        if cfg.get("type") == "sse":
-            raise SystemExit(f"[strata] {where}: MCP server {name!r} uses the old SSE transport (\"type\": \"sse\"); "
-                             "Strata speaks Streamable HTTP - most servers offer it at /mcp")
-        if not isinstance(cfg.get("headers") or {}, dict):
-            raise SystemExit(f"[strata] {where}: MCP server {name!r}: \"headers\" must be an object")
-        return cfg
+        raise SystemExit(f"[strata] {where}: MCP server {name!r} must be an object with \"command\"")
+    if "url" in cfg:
+        raise SystemExit(f"[strata] {where}: MCP server {name!r}: only stdio MCP servers (command) are supported; "
+                         "HTTP transport was removed")
     if not isinstance(cfg.get("command"), str) or not cfg["command"].strip():
-        raise SystemExit(f"[strata] {where}: MCP server {name!r} needs \"command\" (a program to start) or \"url\"")
+        raise SystemExit(f"[strata] {where}: MCP server {name!r} needs \"command\" (a program to start)")
     if not isinstance(cfg.get("args") or [], list):
         raise SystemExit(f"[strata] {where}: MCP server {name!r}: \"args\" must be a list")
     if not isinstance(cfg.get("env") or {}, dict):
